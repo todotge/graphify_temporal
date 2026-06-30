@@ -292,3 +292,22 @@ agent's config, these prompts work directly:
 | `add timestamps to the existing graph` | `graphify-temporal enrich` |
 | `I also want to know when files arrived in directories` | `graphify-temporal enrich --include-dir-mtime` |
 | `update the graph with real creation dates` | `graphify-temporal enrich --use-birthtime` |
+
+### Code review & modifications
+
+| Prompt | What the agent runs |
+|--------|---------------------|
+| `review the most recently modified files` | `graphify-temporal query --order newest-first \| head -20` |
+| `which files have changed this week? review them` | `graphify-temporal query --since $(date -I -d "7 days ago") --order newest-first` |
+| `show me what arrived here vs what was created` | `graphify-temporal enrich --use-birthtime --include-dir-mtime && graphify-temporal query --order oldest-first` |
+
+### Onboarding & audit
+
+| Prompt | What the agent runs |
+|--------|---------------------|
+| `how active is this project?` | `graphify-temporal stats` |
+| `which files haven't been touched in months?` | `graphify-temporal query --before 2026-01-01 --order oldest-first` |
+| `were these files copied in bulk or modified individually?` | `graphify-temporal query --order oldest-first` (timestamps identici = bulk copy) |
+| `what did the project look like at the end of last month?` | `graphify-temporal query --before 2026-05-31 --order newest-first` |
+| `which folders changed the most recently?` | `graphify-temporal query --since $(date -I -d "30 days ago") --order newest-first` |
+| `what was the exact order of changes during that incident?` | `graphify-temporal timeline --since DATE --before DATE` |
