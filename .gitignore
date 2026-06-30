@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# graphify output (user generates this locally)
+graphify-out/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OpenCode dev environment (not needed by users)
+.opencode/
+
+ISSUE_ROADMAP.md
