@@ -60,6 +60,7 @@ def query_nodes(
     before: str | None = None,
     use_dir_mtime: bool = False,
     order: str = "none",
+    files_only: bool = True,
 ) -> list[dict[str, Any]]:
     """Return nodes matching *search* (case-insensitive label or id),
     filtered by time range, and optionally sorted.
@@ -121,6 +122,9 @@ def query_nodes(
             key=lambda n: _ts_from_node(n, time_key) or float("inf"),
         )
 
+    if files_only:
+        results = _collapse_by_file(results)
+
     return results
 
 
@@ -135,11 +139,16 @@ def build_timeline(
     since: str | None = None,
     before: str | None = None,
     max_steps: int = 500,
+    files_only: bool = True,
 ) -> list[dict[str, Any]]:
     """Walk ``preceded_by`` edges and return an ordered list of steps.
 
     Each step is a dict: ``{node_id, label, file_mtime, dir_mtime,
     source_file, source_location}``.
+
+    When *files_only* is True (default), consecutive steps from the same
+    file are collapsed — only the first node of each file appears in the
+    timeline.
 
     When *start_id* is given, the walk begins at that node and follows edges
     forward (target direction).  Otherwise it picks the oldest node in the
@@ -187,7 +196,7 @@ def build_timeline(
             start_id, nodes_by_id, out_edges, max_steps,
             since_ts, before_ts,
         )
-        return chain
+        return _collapse_by_file(chain) if files_only else chain
 
     # No start — pick the oldest node that starts a chain
     start_nodes = [
@@ -210,11 +219,23 @@ def build_timeline(
             best_id = nid
 
     if best_id:
-        return _walk_forward(
+        chain = _walk_forward(
             best_id, nodes_by_id, out_edges, max_steps,
             since_ts, before_ts,
         )
+        if files_only:
+            chain = _collapse_by_file(chain)
+        return chain
     return []
+
+
+def _collapse_by_file(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep only the first step per source_file.  Dict insertion order
+    preserves the original sort (Python 3.7+)."""
+    index: dict[str, dict[str, Any]] = {}
+    for s in steps:
+        index.setdefault(s.get("source_file") or "", s)
+    return list(index.values())
 
 
 def _walk_forward(

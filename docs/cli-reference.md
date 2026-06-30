@@ -136,11 +136,13 @@ graphify-temporal query [SEARCH] [OPTIONS]
 | `--before DATE` | string | Only show nodes with timestamp <= DATE (YYYY-MM-DD) |
 | `--use-dir-mtime` | flag | Filter/sort by `dir_mtime` instead of `file_mtime` |
 | `--order MODE` | choice | `newest-first`, `oldest-first`, or `none` (default) |
+| `--full` | flag | Show all nodes (default: one per source_file, like `timeline`) |
 
 ### Examples
 
 ```bash
-graphify-temporal query "auth"                          # find nodes by name
+graphify-temporal query "auth"                          # find nodes by name (one per file)
+graphify-temporal query "auth" --full                   # every matching node
 graphify-temporal query "auth" --since 2026-05-01       # + filter by date
 graphify-temporal query "auth" --order newest-first     # sorted chronologically
 graphify-temporal query --since 2026-06-01 --order oldest-first  # all nodes this month
@@ -179,11 +181,13 @@ graphify-temporal timeline [START_ID] [OPTIONS]
 | `START_ID` | positional | Begin the timeline at this node id (default: oldest chain-start) |
 | `--since DATE` | string | Only show steps with timestamp >= DATE |
 | `--before DATE` | string | Only show steps with timestamp <= DATE |
+| `--full` | flag | Show every node (default: collapsed, one entry per file) |
 
 ### Examples
 
 ```bash
-graphify-temporal timeline                             # full chain from oldest node
+graphify-temporal timeline                             # one entry per file
+graphify-temporal timeline --full                      # every node, verbose
 graphify-temporal timeline --since 2026-05-01           # from oldest >= May
 graphify-temporal timeline "enricher_enrich"             # from a specific node
 ```

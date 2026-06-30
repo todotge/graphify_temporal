@@ -97,10 +97,12 @@ graphify-temporal uninstall                  # remove instructions
 
 ### Querying
 ```bash
-graphify-temporal query "auth"              # search nodes by name
+graphify-temporal query "auth"              # search nodes (one per file)
+graphify-temporal query --full               # show every node, not collapsed
 graphify-temporal query --since DATE         # filter by timestamp
 graphify-temporal query --order newest-first # sort chronologically
-graphify-temporal timeline                  # walk preceded_by chain
+graphify-temporal timeline                  # walk preceded_by chain (one per file)
+graphify-temporal timeline --full            # show every node, not collapsed
 graphify-temporal timeline "node_id"         # from a specific node
 graphify-temporal stats                      # temporal coverage
 ```

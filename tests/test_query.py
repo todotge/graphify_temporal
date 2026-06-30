@@ -84,7 +84,7 @@ class TestQueryNodes:
             {"id": "c", "label": "Nothing", "file_mtime": "2026-06-12T12:00:00Z"},
         ]
         _make_graph_json(graph_dir, nodes)
-        results = query_nodes(tmp_path, search="auth")
+        results = query_nodes(tmp_path, search="auth", files_only=False)
         assert len(results) == 1
         assert results[0]["id"] == "a"
 
@@ -96,7 +96,7 @@ class TestQueryNodes:
             {"id": "db", "label": "B", "file_mtime": "2026-06-13T12:00:00Z"},
         ]
         _make_graph_json(graph_dir, nodes)
-        results = query_nodes(tmp_path, search="auth")
+        results = query_nodes(tmp_path, search="auth", files_only=False)
         assert len(results) == 1
         assert results[0]["id"] == "auth_module"
 
@@ -108,7 +108,7 @@ class TestQueryNodes:
             {"id": "b", "label": "B", "file_mtime": "2026-06-15T12:00:00Z"},
         ]
         _make_graph_json(graph_dir, nodes)
-        results = query_nodes(tmp_path, since="2026-06-14")
+        results = query_nodes(tmp_path, since="2026-06-14", files_only=False)
         assert len(results) == 1
         assert results[0]["id"] == "b"
 
@@ -120,7 +120,7 @@ class TestQueryNodes:
             {"id": "b", "label": "B", "file_mtime": "2026-06-15T12:00:00Z"},
         ]
         _make_graph_json(graph_dir, nodes)
-        results = query_nodes(tmp_path, before="2026-06-14")
+        results = query_nodes(tmp_path, before="2026-06-14", files_only=False)
         assert len(results) == 1
         assert results[0]["id"] == "a"
 
@@ -132,7 +132,7 @@ class TestQueryNodes:
             {"id": "b", "label": "B", "file_mtime": "2026-06-15T12:00:00Z"},
         ]
         _make_graph_json(graph_dir, nodes)
-        results = query_nodes(tmp_path, order="newest-first")
+        results = query_nodes(tmp_path, order="newest-first", files_only=False)
         assert results[0]["id"] == "b"
         assert results[1]["id"] == "a"
 
@@ -144,7 +144,7 @@ class TestQueryNodes:
             {"id": "b", "label": "B", "file_mtime": "2026-06-15T12:00:00Z"},
         ]
         _make_graph_json(graph_dir, nodes)
-        results = query_nodes(tmp_path, order="oldest-first")
+        results = query_nodes(tmp_path, order="oldest-first", files_only=False)
         assert results[0]["id"] == "a"
         assert results[1]["id"] == "b"
 
@@ -156,7 +156,7 @@ class TestQueryNodes:
             {"id": "b", "label": "B", "file_mtime": "2026-06-15T12:00:00Z"},
         ]
         _make_graph_json(graph_dir, nodes)
-        results = query_nodes(tmp_path)
+        results = query_nodes(tmp_path, files_only=False)
         assert len(results) == 2
 
     def test_nodes_without_mtime_excluded_when_time_filter(self, tmp_path):
@@ -167,7 +167,7 @@ class TestQueryNodes:
             {"id": "b", "label": "B", "file_mtime": "2026-06-15T12:00:00Z"},
         ]
         _make_graph_json(graph_dir, nodes)
-        results = query_nodes(tmp_path, since="2026-06-14")
+        results = query_nodes(tmp_path, since="2026-06-14", files_only=False)
         assert len(results) == 1
         assert results[0]["id"] == "b"
 
@@ -179,13 +179,40 @@ class TestQueryNodes:
             {"id": "b", "label": "B", "dir_mtime": "2026-06-15T12:00:00Z", "file_mtime": "2026-06-01T12:00:00Z"},
         ]
         _make_graph_json(graph_dir, nodes)
-        results = query_nodes(tmp_path, since="2026-06-14", use_dir_mtime=True)
+        results = query_nodes(tmp_path, since="2026-06-14", use_dir_mtime=True, files_only=False)
         assert len(results) == 1
         assert results[0]["id"] == "b"  # filtered by dir_mtime
 
     def test_missing_graph(self, tmp_path):
         with pytest.raises(FileNotFoundError, match="No graph.json found"):
             query_nodes(tmp_path)
+
+    def test_files_only_collapses_by_file(self, tmp_path):
+        """Default files_only=True: multiple nodes same file → single entry."""
+        graph_dir = tmp_path / "graphify-out"
+        graph_dir.mkdir()
+        nodes = [
+            {"id": "a_x", "label": "x", "file_mtime": "2026-06-10T12:00:00Z", "source_file": "a.py"},
+            {"id": "a_y", "label": "y", "file_mtime": "2026-06-10T12:00:01Z", "source_file": "a.py"},
+            {"id": "b_x", "label": "x", "file_mtime": "2026-06-11T12:00:00Z", "source_file": "b.py"},
+        ]
+        _make_graph_json(graph_dir, nodes)
+        results = query_nodes(tmp_path)  # files_only=True by default
+        assert len(results) == 2
+        assert {r["source_file"] for r in results} == {"a.py", "b.py"}
+
+    def test_files_only_with_sort_keeps_right_node(self, tmp_path):
+        """With newest-first, the newest node per file survives collapse."""
+        graph_dir = tmp_path / "graphify-out"
+        graph_dir.mkdir()
+        nodes = [
+            {"id": "a_old", "label": "old", "file_mtime": "2026-06-10T12:00:00Z", "source_file": "a.py"},
+            {"id": "a_new", "label": "new", "file_mtime": "2026-06-12T12:00:00Z", "source_file": "a.py"},
+        ]
+        _make_graph_json(graph_dir, nodes)
+        results = query_nodes(tmp_path, order="newest-first")
+        assert len(results) == 1
+        assert results[0]["id"] == "a_new"  # newest survives
 
 
 # ---------------------------------------------------------------------------
@@ -198,9 +225,9 @@ class TestTimeline:
         graph_dir = tmp_path / "graphify-out"
         graph_dir.mkdir()
         nodes = [
-            {"id": "a", "label": "A", "file_mtime": "2026-06-10T12:00:00Z"},
-            {"id": "b", "label": "B", "file_mtime": "2026-06-11T12:00:00Z"},
-            {"id": "c", "label": "C", "file_mtime": "2026-06-12T12:00:00Z"},
+            {"id": "a", "label": "A", "file_mtime": "2026-06-10T12:00:00Z", "source_file": "a.py"},
+            {"id": "b", "label": "B", "file_mtime": "2026-06-11T12:00:00Z", "source_file": "b.py"},
+            {"id": "c", "label": "C", "file_mtime": "2026-06-12T12:00:00Z", "source_file": "c.py"},
         ]
         links = [
             {"source": "a", "target": "b", "relation": "preceded_by"},
@@ -215,8 +242,8 @@ class TestTimeline:
         graph_dir = tmp_path / "graphify-out"
         graph_dir.mkdir()
         nodes = [
-            {"id": "a", "label": "A", "file_mtime": "2026-06-10T12:00:00Z"},
-            {"id": "b", "label": "B", "file_mtime": "2026-06-11T12:00:00Z"},
+            {"id": "a", "label": "A", "file_mtime": "2026-06-10T12:00:00Z", "source_file": "a.py"},
+            {"id": "b", "label": "B", "file_mtime": "2026-06-11T12:00:00Z", "source_file": "b.py"},
         ]
         links = [{"source": "a", "target": "b", "relation": "preceded_by"}]
         _make_graph_json(graph_dir, nodes, links)
@@ -228,8 +255,8 @@ class TestTimeline:
         graph_dir = tmp_path / "graphify-out"
         graph_dir.mkdir()
         nodes = [
-            {"id": "a", "label": "A", "file_mtime": "2026-06-10T12:00:00Z"},
-            {"id": "b", "label": "B", "file_mtime": "2026-06-15T12:00:00Z"},
+            {"id": "a", "label": "A", "file_mtime": "2026-06-10T12:00:00Z", "source_file": "a.py"},
+            {"id": "b", "label": "B", "file_mtime": "2026-06-15T12:00:00Z", "source_file": "b.py"},
         ]
         links = [{"source": "a", "target": "b", "relation": "preceded_by"}]
         _make_graph_json(graph_dir, nodes, links)
@@ -255,8 +282,8 @@ class TestTimeline:
         graph_dir = tmp_path / "graphify-out"
         graph_dir.mkdir()
         nodes = [
-            {"id": "a", "label": "A", "file_mtime": "2026-06-10T12:00:00Z"},
-            {"id": "b", "label": "B", "file_mtime": "2026-06-11T12:00:00Z"},
+            {"id": "a", "label": "A", "file_mtime": "2026-06-10T12:00:00Z", "source_file": "a.py"},
+            {"id": "b", "label": "B", "file_mtime": "2026-06-11T12:00:00Z", "source_file": "b.py"},
         ]
         links = [
             {"source": "a", "target": "b", "relation": "preceded_by"},
@@ -278,8 +305,8 @@ class TestTimeline:
         graph_dir = tmp_path / "graphify-out"
         graph_dir.mkdir()
         nodes = [
-            {"id": "a", "label": "A", "file_mtime": "2026-06-10T12:00:00Z"},
-            {"id": "b", "label": "B", "file_mtime": "2026-06-20T12:00:00Z"},
+            {"id": "a", "label": "A", "file_mtime": "2026-06-10T12:00:00Z", "source_file": "a.py"},
+            {"id": "b", "label": "B", "file_mtime": "2026-06-20T12:00:00Z", "source_file": "b.py"},
         ]
         links = [{"source": "a", "target": "b", "relation": "preceded_by"}]
         _make_graph_json(graph_dir, nodes, links)

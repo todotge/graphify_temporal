@@ -258,6 +258,11 @@ def main() -> None:
         default="none",
         help="Sort results chronologically",
     )
+    query_parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Show all nodes (default: one per source_file)",
+    )
 
     # ---- timeline subcommand ------------------------------------------------
     timeline_parser = sub.add_parser(
@@ -283,6 +288,11 @@ def main() -> None:
         default=None,
         metavar="DATE",
         help="Only show steps with timestamp <= DATE",
+    )
+    timeline_parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Show all nodes (default: one per file)",
     )
 
     # ---- stats subcommand ---------------------------------------------------
@@ -343,6 +353,7 @@ def main() -> None:
                 before=args.before,
                 use_dir_mtime=args.use_dir_mtime,
                 order=args.order,
+                files_only=not args.full,
             )
         except (FileNotFoundError, ValueError, OSError) as e:
             print(f"error: {e}", file=sys.stderr)
@@ -373,6 +384,7 @@ def main() -> None:
                 start_id=args.start_id,
                 since=args.since,
                 before=args.before,
+                files_only=not args.full,
             )
         except (FileNotFoundError, ValueError, OSError) as e:
             print(f"error: {e}", file=sys.stderr)

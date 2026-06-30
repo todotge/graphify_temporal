@@ -138,21 +138,28 @@ by time.  **All time filters require explicit dates** (YYYY-MM-DD) — the tool
 does not understand "last week" or "yesterday".  You (or your AI agent) must
 compute the date range before calling the command.
 
+`query` and `timeline` default to **one entry per file** (not per node).  Use
+`--full` to see every node.  Files inside `graphify-out/` are automatically
+excluded from enrichment.
+
 ```bash
-# This week's changes (compute the Monday manually):
-graphify-temporal query --since 2026-06-08 --order newest-first
+# Find nodes by name (one per file)
+graphify-temporal query "auth"
 
-# Today's work:
-graphify-temporal query --since 2026-06-14 --order newest-first
+# All nodes, no file-level collapse
+graphify-temporal query "auth" --full
 
-# Specific month:
+# Filter by date range
 graphify-temporal query "auth" --since 2026-05-01 --before 2026-06-01
 
 # Sort chronologically
 graphify-temporal query "auth" --order newest-first
 
-# Walk the preceded_by chain
+# Walk the preceded_by chain (one per file)
 graphify-temporal timeline
+
+# Every node in the chain
+graphify-temporal timeline --full
 
 # Start the timeline from a specific node
 graphify-temporal timeline "enricher_enrich"
