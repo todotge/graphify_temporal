@@ -169,10 +169,7 @@ def build_timeline(
     nodes: list[dict[str, Any]] = data.get("nodes", [])
     links: list[dict[str, Any]] = data.get("links", [])
 
-    # Index nodes by id
-    nodes_by_id: dict[str, dict[str, Any]] = {}
-    for n in nodes:
-        nodes_by_id[n["id"]] = n
+    nodes_by_id: dict[str, dict[str, Any]] = {n["id"]: n for n in nodes}
 
     since_ts = _parse_date_ts(since) if since else None
     before_ts = _parse_date_ts(before) if before else None
@@ -207,25 +204,18 @@ def build_timeline(
         # Fall back to any node with outgoing edges
         start_nodes = list(out_edges.keys())
 
-    # Pick oldest by file_mtime
-    best_id: str | None = None
-    best_ts: float = float("inf")
-    for nid in start_nodes:
-        ts = _ts_from_node(nodes_by_id[nid], "file_mtime")
-        if ts is None:
-            ts = float("inf")
-        if ts < best_ts:
-            best_ts = ts
-            best_id = nid
+    best_id = min(
+        start_nodes,
+        key=lambda nid: _ts_from_node(nodes_by_id[nid], "file_mtime") or float("inf"),
+        default=None,
+    )
 
     if best_id:
         chain = _walk_forward(
             best_id, nodes_by_id, out_edges, max_steps,
             since_ts, before_ts,
         )
-        if files_only:
-            chain = _collapse_by_file(chain)
-        return chain
+        return _collapse_by_file(chain) if files_only else chain
     return []
 
 
