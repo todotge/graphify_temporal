@@ -133,6 +133,8 @@ def enrich(
     for node in nodes:
         sf = node.get("source_file")
         if sf and matches_glob(sf, include) and not is_excluded(sf, exclude):
+            if sf.startswith("graphify-out/") or sf == "graphify-out":
+                continue
             unique_files.add(sf)
 
     # ---- resolve timestamps for every unique file -------------------------

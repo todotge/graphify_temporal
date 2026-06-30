@@ -1,5 +1,8 @@
 # CLI Reference
 
+> `graphify-temporal` is a separate CLI from `graphify`. All subcommands
+> start with `graphify-temporal`, not `graphify`.
+
 ## `enrich` — stamp nodes with temporal metadata
 
 ```

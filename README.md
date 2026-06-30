@@ -38,7 +38,12 @@ cd graphify-temporal
 pip install .
 ```
 
+If `graphify-temporal` is not found after install, use `python -m graphify_temporal` instead — the binary lives in your venv's `bin/` directory.
+
 ## Usage
+
+`graphify-temporal` is a separate CLI from `graphify`. The enrichment
+subcommand is `graphify-temporal enrich`, not `graphify enrich`.
 
 ```bash
 # Basic: add file_mtime to all nodes + intra-file preceded_by edges

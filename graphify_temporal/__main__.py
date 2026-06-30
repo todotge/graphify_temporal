@@ -306,9 +306,10 @@ def main() -> None:
             else:
                 detected = detect(root)
                 if not detected:
-                    print("No supported AI client detected in this project.", file=sys.stderr)
-                    sys.exit(1)
-                results = _install(root, clients=detected)
+                    # No client markers — default to AGENTS.md (most common)
+                    results = _install(root, clients=["opencode"])
+                else:
+                    results = _install(root, clients=detected)
         except OSError as e:
             print(f"error: {e}", file=sys.stderr)
             sys.exit(1)
@@ -323,8 +324,8 @@ def main() -> None:
             else:
                 detected = detect(root)
                 if not detected:
-                    print("No supported AI client detected in this project.", file=sys.stderr)
-                    sys.exit(1)
+                    # Nothing to remove — clean exit
+                    return
                 results = _uninstall(root, clients=detected)
         except OSError as e:
             print(f"error: {e}", file=sys.stderr)

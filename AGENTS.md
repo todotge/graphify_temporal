@@ -78,6 +78,10 @@ directly, never through the CLI.
 Temporal enrichment for graphify knowledge graphs — stamps nodes with filesystem
 timestamps and creates deterministic `preceded_by` edges.
 
+> **Note:** `graphify-temporal` is a SEPARATE command from `graphify`.
+> The enrichment subcommand is `graphify-temporal enrich`, NOT `graphify enrich`.
+> graphify itself has no temporal features — this extension adds them.
+
 ### Setup
 ```bash
 pip install git+https://github.com/todotge/graphify-temporal.git

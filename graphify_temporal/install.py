@@ -51,6 +51,10 @@ _INSTRUCTION_BLOCK = """\
 Temporal enrichment for graphify knowledge graphs — stamps nodes with filesystem
 timestamps and creates deterministic `preceded_by` edges.
 
+> **Note:** `graphify-temporal` is a SEPARATE command from `graphify`.
+> The enrichment subcommand is `graphify-temporal enrich`, NOT `graphify enrich`.
+> graphify itself has no temporal features — this extension adds them.
+
 ### Setup
 ```bash
 pip install git+https://github.com/todotge/graphify-temporal.git
@@ -65,6 +69,11 @@ Editable install (development):
 ```bash
 uv venv && uv pip install -e ".[dev]"
 ```
+
+> **If `graphify-temporal` is not found** after pip install, the binary lives
+> in the venv's `bin/` directory.  Use the full path
+> (`.venv/bin/graphify-temporal`) or fall back to
+> `python -m graphify_temporal` — both are equivalent.
 
 ### Usage
 ```bash
