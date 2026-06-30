@@ -44,6 +44,8 @@ If `graphify-temporal` is not found after install, use `python -m graphify_tempo
 
 `graphify-temporal` is a separate CLI from `graphify`. The enrichment
 subcommand is `graphify-temporal enrich`, not `graphify enrich`.
+**After every `/graphify` build, run `graphify-temporal enrich`** — the
+graph is not complete without temporal stamps.
 
 ```bash
 # Basic: add file_mtime to all nodes + intra-file preceded_by edges

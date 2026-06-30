@@ -81,6 +81,11 @@ timestamps and creates deterministic `preceded_by` edges.
 > **Note:** `graphify-temporal` is a SEPARATE command from `graphify`.
 > The enrichment subcommand is `graphify-temporal enrich`, NOT `graphify enrich`.
 > graphify itself has no temporal features — this extension adds them.
+>
+> **Workflow:** after running `/graphify` to build or update the graph,
+> always run `graphify-temporal enrich` immediately.  The graph is not
+> complete without temporal stamps.  `enrich` is idempotent — safe to
+> re-run anytime.
 
 ### Setup
 ```bash
@@ -96,6 +101,11 @@ Editable install (development):
 ```bash
 uv venv && uv pip install -e ".[dev]"
 ```
+
+> **If `graphify-temporal` is not found** after pip install, the binary lives
+> in the venv's `bin/` directory.  Use the full path
+> (`.venv/bin/graphify-temporal`) or fall back to
+> `python -m graphify_temporal` — both are equivalent.
 
 ### Usage
 ```bash
@@ -119,10 +129,12 @@ graphify-temporal uninstall                  # remove instructions
 
 ### Querying
 ```bash
-graphify-temporal query "auth"              # search nodes by name
+graphify-temporal query "auth"              # search nodes (one per file)
+graphify-temporal query --full               # show every node, not collapsed
 graphify-temporal query --since DATE         # filter by timestamp
 graphify-temporal query --order newest-first # sort chronologically
-graphify-temporal timeline                  # walk preceded_by chain
+graphify-temporal timeline                  # walk preceded_by chain (one per file)
+graphify-temporal timeline --full            # show every node, not collapsed
 graphify-temporal timeline "node_id"         # from a specific node
 graphify-temporal stats                      # temporal coverage
 ```

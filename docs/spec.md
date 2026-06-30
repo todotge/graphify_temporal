@@ -41,9 +41,10 @@ graphify_temporal/
 └── query.py             # query nodes by label/time, build timeline, temporal stats
 tests/
 ├── __init__.py
-├── test_enricher.py     # TestFs (11) + TestEnricher (15), all via tmp_path
-├── test_install.py      # block manipulation (6) + filesystem injection (15)
-└── test_query.py        # query_nodes (12) + timeline (6) + stats (5) + CLI (3)
+├── test_enricher.py     # TestFs (11) + TestEnricher (20), all via tmp_path
+├── test_install.py      # block manipulation (6) + filesystem injection (18)
+└── test_query.py        # TestParseDateTs (2) + TestTsFromNode (4) + query_nodes (12)
+│                          + timeline (7) + stats (7) + CLI (3)
 docs/
 ├── spec.md              # This file — architecture overview
 ├── cli-reference.md     # Full CLI reference
@@ -55,11 +56,11 @@ docs/
 
 | Module | Responsibility | Public API |
 |--------|---------------|-----------|
-| `__main__.py` | CLI parsing, dispatch to `enrich()` / `install()` / `uninstall()`, stats printing | `main()` |
+| `__main__.py` | CLI parsing, dispatch to `enrich()` / `install()` / `uninstall()` / `query_nodes()` / `build_timeline()` / `temporal_stats()`, stats printing | `main()` |
 | `enricher.py` | Load graph.json, stamp nodes, build edges, save, regenerate outputs | `enrich()`, `regenerate_outputs()` |
-| `fs.py` | Stat for mtime/ctime/birthtime, dir mtime, glob filtering, date parsing | `resolve_mtime()`, `resolve_birthtime()`, `resolve_dir_mtime()`, `matches_glob()`, `is_excluded()`, `parse_date()` |
+| `fs.py` | Stat for mtime/ctime/birthtime, dir mtime, glob filtering, date parsing, Linux statx via ctypes | `resolve_mtime()`, `resolve_birthtime()`, `resolve_dir_mtime()`, `matches_glob()`, `is_excluded()`, `parse_date()` |
 | `install.py` | Detect clients (11 platforms), inject/remove instruction blocks, register OpenCode plugin | `detect()`, `install()`, `uninstall()` |
-| `query.py` | Query nodes by label/time, build timeline from preceded_by edges, temporal stats | `query_nodes()`, `build_timeline()`, `temporal_stats()` |
+| `query.py` | Query nodes by label/time (with file-level collapse), build timeline from preceded_by edges, temporal stats | `query_nodes()`, `build_timeline()`, `temporal_stats()` |
 
 ## Data flow (`enrich`)
 
@@ -67,16 +68,20 @@ docs/
 2. Collect unique `source_file` values from all nodes
 3. Filter by `--since`, `--include`, `--exclude` if provided
 4. For each source file, stat the filesystem (UTC timestamps via `time.gmtime`):
-   - Default: `st_mtime` → `file_mtime` (ISO 8601, UTC)
+   - Default: `st_mtime` → `file_mtime` (ISO 8601 with Z suffix, UTC)
    - `--use-ctime`: `st_ctime` → `file_mtime` (UTC)
    - `--use-birthtime`: `st_birthtime` → `file_mtime` (UTC, Linux via ctypes `statx(2)`)
    - `--include-dir-mtime`: also writes `dir_mtime` (UTC)
-5. Intra-file: sort nodes by `(_extract_line, node_id)` → `preceded_by` edges
-6. Cross-file (opt-in): sort files by resolved timestamp, chain first nodes
+5. Intra-file: sort nodes by `(_extract_line, node_id)` → `preceded_by` edges (deterministic)
+6. Cross-file (opt-in): sort by resolved timestamp, chain first nodes (line-ordered)
 7. If `--dry-run`: return stats dict without writing
 8. Deduplicate by `(source, target, relation)` triple against existing `links`
 9. Write `graph.json` with `json.dumps(data, ensure_ascii=False)`
 10. Default: regenerate `graph.html` and `wiki/` via `graphify export` subprocess
+    (`--no-regenerate` skips this step)
+
+Nodes from `graphify-out/` itself are **automatically excluded** from enrichment
+— no need to pass `--exclude "graphify-out/**"`. subprocess
 
 ## Data flow (`install`)
 
@@ -124,7 +129,7 @@ docs/
 | `parse_date` valid | `2026-05-15` → float |
 | `parse_date` invalid | `15-05-2026` → ValueError |
 
-### TestEnricher — integration (15 tests)
+### TestEnricher — integration (20 tests)
 
 | Test | Coverage |
 |------|----------|
@@ -143,8 +148,14 @@ docs/
 | No source_files | nodes_enriched == 0 |
 | Idempotency | Re-run: edges deduplicated |
 | Preserves existing edges | Non-temporal edges survive |
+| `links: null` handled | graph.json with null links doesn't crash |
+| `links` key missing | graph.json without links key handled |
+| `source_file: ""` | Empty source_file → None, no crash |
+| Birthtime + since filter | --use-birthtime + --since doesn't TypeError |
+| ISO Z suffix | file_mtime ends with Z |
+| Include + exclude together | Both glob filters work simultaneously |
 
-### TestInstall — integration (21 tests)
+### TestInstall — integration (24 tests)
 
 See [team-setup.md](team-setup.md) for the install flow.  Tests cover:
 block injection, replacement, removal, idempotency, client detection
@@ -152,14 +163,14 @@ block injection, replacement, removal, idempotency, client detection
 install/uninstall, CLI help, and edge cases (no markers, missing files,
 empty files).
 
-### TestQuery — integration (26 tests)
+### TestQuery — integration (35 tests)
 
 | Group | Tests | Coverage |
 |-------|-------|----------|
 | Unit | 6 | `_parse_date_ts`, `_ts_from_node` edge cases |
-| query_nodes | 9 | Search, since/before filters, ordering, empty timestamps, dir_mtime |
-| build_timeline | 6 | Basic chain, start_id, since filter, non-preceded_by edges, cycles |
-| temporal_stats | 5 | Basic stats, empty graph, dir_mtime, gaps, JSON output |
+| query_nodes | 12 | Search, since/before filters, ordering, empty timestamps, dir_mtime, file collapse |
+| build_timeline | 7 | Basic chain, start_id, since/before filters, non-preceded_by edges, cycles |
+| temporal_stats | 7 | Basic stats, empty graph, dir_mtime, gaps, median, JSON output |
 | CLI | 3 | `--help` output for query, timeline, stats |
 
 ## Dependencies

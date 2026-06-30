@@ -5,6 +5,9 @@
 
 ## `enrich` — stamp nodes with temporal metadata
 
+Nodes from `graphify-out/` itself are automatically excluded — no need to
+pass `--exclude "graphify-out/**"`.
+
 ```
 graphify-temporal enrich [PATH] [OPTIONS]
 ```
@@ -195,9 +198,9 @@ graphify-temporal timeline "enricher_enrich"             # from a specific node
 ### Output
 
 ```
-  #1   opencode_package               2026-06-11T19:54:05  package.json
+  #1   opencode_package               2026-06-11T19:54:05Z  package.json
                                                           ↓ preceded_by
-  #2   opencode_package_dependencies  2026-06-11T19:54:05  dependencies
+  #2   opencode_package_dependencies  2026-06-11T19:54:05Z  dependencies
                                                           ↓ preceded_by
   #3   ...
 ```

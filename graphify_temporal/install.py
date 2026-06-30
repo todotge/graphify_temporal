@@ -54,6 +54,11 @@ timestamps and creates deterministic `preceded_by` edges.
 > **Note:** `graphify-temporal` is a SEPARATE command from `graphify`.
 > The enrichment subcommand is `graphify-temporal enrich`, NOT `graphify enrich`.
 > graphify itself has no temporal features — this extension adds them.
+>
+> **Workflow:** after running `/graphify` to build or update the graph,
+> always run `graphify-temporal enrich` immediately.  The graph is not
+> complete without temporal stamps.  `enrich` is idempotent — safe to
+> re-run anytime.
 
 ### Setup
 ```bash

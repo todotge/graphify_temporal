@@ -12,7 +12,7 @@ Each gets written to a different node attribute depending on the flag.
 | `file_mtime` | `--use-birthtime` | True creation time — when the file was born on disk |
 | `dir_mtime` | `--include-dir-mtime` | Parent directory mtime — best proxy for arrival time |
 
-All timestamp fields are ISO 8601 strings (`2026-06-11T19:45:25`) or `null`
+All timestamp fields are ISO 8601 strings (`2026-06-11T19:45:25Z`) or `null`
 when the source file is missing, inaccessible, or the requested timestamp is
 unavailable on the platform.
 
@@ -32,9 +32,9 @@ Example from this repo:
 
 ```
 file: graphify_temporal/__init__.py
-  birthtime: 2026-06-11T19:45:25  ← file was created
-  dir_mtime: 2026-06-11T19:47:14  ← arrived in its current directory
-  mtime:     2026-06-11T20:12:29  ← last content change
+  birthtime: 2026-06-11T19:45:25Z  ← file was created
+  dir_mtime: 2026-06-11T19:47:14Z  ← arrived in its current directory
+  mtime:     2026-06-11T20:12:29Z  ← last content change
 ```
 
 ## Birth time (`st_birthtime`)
@@ -95,8 +95,8 @@ need.  Use `--dry-run` first to preview what will change.
 
 ```json
 {
-  "file_mtime": "2026-06-11T19:45:25",
-  "dir_mtime": "2026-06-11T19:47:14"
+  "file_mtime": "2026-06-11T19:45:25Z",
+  "dir_mtime": "2026-06-11T19:47:14Z"
 }
 ```
 

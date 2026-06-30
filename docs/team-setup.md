@@ -58,7 +58,7 @@ under the project root, the client is considered present.  For example:
 The `## graphify-temporal` block contains:
 
 - **Setup** — `pip install git+...`, `git clone ... && pip install .`, and `uv venv && uv pip install -e ".[dev]"`
-- **All `enrich` flags** with examples (use-birthtime, include-dir-mtime, cross-file, dry-run, since, include, exclude)
+- **All `enrich`, `query`, `timeline`, `stats` commands** with examples and agent guidance
 - **`install` / `uninstall`** commands
 - **Test command** — `.venv/bin/pytest tests/ -v`
 - **Key facts** — zero deps, idempotent, cross-platform, st_birthtime support
