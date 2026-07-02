@@ -1,5 +1,10 @@
 # graphify-temporal
 
+![version](https://img.shields.io/badge/version-1.0.0-blue)
+![python](https://img.shields.io/badge/python-%3E%3D3.10-blue)
+![license](https://img.shields.io/badge/license-MIT-green)
+[![Ko-fi](https://img.shields.io/badge/support-Ko--fi-ff5e5b)](https://ko-fi.com/gianlucagernone)
+
 Enrich a [graphify](https://github.com/safishamsi/graphify) knowledge graph with temporal metadata from filesystem timestamps.
 
 Adds `file_mtime`, `file_birthtime`, `dir_mtime` to nodes and deterministic `preceded_by` edges — making your knowledge graph time-aware without any LLM cost.
@@ -224,6 +229,25 @@ and reminds the agent to run enrichment before it reaches for raw file reads.
 | [docs/timestamps.md](docs/timestamps.md) | Timestamp semantics, birthtime support, switching modes, schema |
 | [docs/team-setup.md](docs/team-setup.md) | `install`/`uninstall`, client detection, OpenCode plugin, team workflow |
 | [docs/spec.md](docs/spec.md) | Architecture overview, data flow, test plan, dependencies, non-goals |
+
+## Contributing
+
+Issues and PRs welcome — bug reports, edge cases on unusual filesystems, and
+platform quirks around birthtime resolution are especially useful.
+
+```bash
+git clone https://github.com/todotge/graphify-temporal.git
+cd graphify-temporal
+pip install -e ".[dev]"
+pytest
+```
+
+Open an issue before a large PR so we can align on approach first. Small
+fixes and test additions can go straight to a PR.
+
+## Support
+
+If graphify-temporal saves you time, consider [buying me a coffee](https://ko-fi.com/gianlucagernone) — it goes straight back into building and maintaining tools like this one.
 
 ## License
 
