@@ -29,6 +29,7 @@ from .fs import (
     resolve_mtime, resolve_birthtime, resolve_dir_mtime,
     matches_glob, is_excluded, parse_date,
 )
+from . import git_source
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +51,30 @@ def _extract_line(source_location: Any) -> int:
     return int(m.group(1)) if m else 0
 
 
+def _iso_to_epoch(iso: str) -> float | None:
+    """Parse the fs.py/git_source.py ``...Z`` ISO 8601 shape back to epoch."""
+    import calendar
+    import time as _time
+    try:
+        return float(calendar.timegm(_time.strptime(iso, "%Y-%m-%dT%H:%M:%SZ")))
+    except (ValueError, TypeError):
+        return None
+
+
+def _safe_relative(git_root: Path, abs_path: Path) -> str | None:
+    """Return *abs_path* relative to *git_root* as a posix string, or None.
+
+    Guards every git subprocess call against a malicious/traversing
+    ``source_file`` value (e.g. containing ``../``) reaching git's argv —
+    ``Path.relative_to`` raises ValueError for anything outside git_root,
+    which we treat as "can't use git for this file", not a crash.
+    """
+    try:
+        return abs_path.resolve().relative_to(git_root).as_posix()
+    except (ValueError, OSError):
+        return None
+
+
 # ---------------------------------------------------------------------------
 # main entry point
 # ---------------------------------------------------------------------------
@@ -59,6 +84,7 @@ def enrich(
     root: Path,
     use_ctime: bool = False,
     use_birthtime: bool = False,
+    use_git: bool = False,
     cross_file: bool = False,
     dry_run: bool = False,
     since: str | None = None,
@@ -77,7 +103,15 @@ def enrich(
         Stat st_ctime instead of st_mtime (Unix: metadata-change time).
     use_birthtime : bool
         Stat st_birthtime instead of st_mtime (true creation time).
-        Mutually exclusive with use_ctime.
+        Mutually exclusive with use_ctime and use_git.
+    use_git : bool
+        Derive ``file_mtime`` from git author-dates (git log) instead of
+        stat(2), for files tracked inside a git repository — stat mtime on a
+        clone reflects checkout time, not history. Falls back to stat for
+        untracked files or when git/history is unavailable. Also stamps
+        each node with ``git_commit_date`` (line-level via git blame when
+        possible, file-level otherwise) and ``git_author``. Mutually
+        exclusive with use_ctime and use_birthtime.
     cross_file : bool
         Generate chronological edges between the first node of each file.
     dry_run : bool
@@ -128,6 +162,25 @@ def enrich(
     # Convert the since date once so we compare floats, not strings.
     since_ts: float | None = parse_date(since) if since else None
 
+    # ---- resolve git repo root once (use_git only) -------------------------
+    # git_root stays None when git is missing, root isn't inside a working
+    # tree, or use_git wasn't requested — every file then falls straight
+    # through to the existing stat-based resolution, unchanged.
+    git_root: Path | None = None
+    if use_git:
+        if git_source.git_available():
+            git_root = git_source.find_repo_root(root)
+            if git_root is None and not quiet:
+                print(
+                    "  --git requested but no git repository found at "
+                    f"{root} — falling back to filesystem timestamps",
+                )
+        elif not quiet:
+            print(
+                "  --git requested but git not found on PATH — "
+                "falling back to filesystem timestamps",
+            )
+
     # ---- collect unique source_file paths ---------------------------------
     unique_files: set[str] = set()
     for node in nodes:
@@ -140,38 +193,59 @@ def enrich(
     # ---- resolve timestamps for every unique file -------------------------
     # mtime_cache maps source_file → ISO 8601 string or None (missing/old).
     mtime_cache: dict[str, str | None] = {}
+    # git_file_date_cache holds the git-derived date per file (use_git only),
+    # separate from mtime_cache so the per-node blame step below can tell
+    # "this file's timestamp came from git" without re-deriving it.
+    git_file_date_cache: dict[str, str | None] = {}
+    git_relpaths: dict[str, str] = {}
     not_found = 0
 
     for sf in sorted(unique_files):
+        git_date: str | None = None
+        if git_root is not None:
+            relpath = _safe_relative(git_root, root / sf)
+            if relpath is not None:
+                git_relpaths[sf] = relpath
+                git_date = git_source.resolve_file_date(git_root, relpath, mode="last")
+                git_file_date_cache[sf] = git_date
+
         if since_ts is not None:
-            # --since path: stat the file ourselves so we can skip old ones
-            # before ever calling resolve_mtime.
-            fp = root / sf
-            try:
-                st = fp.stat()
-            except (OSError, FileNotFoundError):
-                not_found += 1
-                mtime_cache[sf] = None
-                continue
-            if use_birthtime:
-                bt = getattr(st, "st_birthtime", None)
-                if bt:
-                    effective_ts = bt
-                else:
-                    # birthtime not in os.stat() — keep effective_ts = None.
-                    # Don't filter: resolve_birthtime() may still succeed via
-                    # statx(2) during stamping. Filtering conservatively
-                    # avoids excluding files whose birthtime we can't see yet.
-                    effective_ts = None
-            elif use_ctime:
-                effective_ts = st.st_ctime
+            if git_date is not None:
+                # git supplies a trustworthy date directly — skip the stat
+                # pre-check entirely (a clone's stat mtime is an artifact of
+                # checkout time, not a signal to filter on).
+                effective_ts = _iso_to_epoch(git_date)
             else:
-                effective_ts = st.st_mtime
+                # --since path: stat the file ourselves so we can skip old
+                # ones before ever calling resolve_mtime.
+                fp = root / sf
+                try:
+                    st = fp.stat()
+                except (OSError, FileNotFoundError):
+                    not_found += 1
+                    mtime_cache[sf] = None
+                    continue
+                if use_birthtime:
+                    bt = getattr(st, "st_birthtime", None)
+                    if bt:
+                        effective_ts = bt
+                    else:
+                        # birthtime not in os.stat() — keep effective_ts = None.
+                        # Don't filter: resolve_birthtime() may still succeed via
+                        # statx(2) during stamping. Filtering conservatively
+                        # avoids excluding files whose birthtime we can't see yet.
+                        effective_ts = None
+                elif use_ctime:
+                    effective_ts = st.st_ctime
+                else:
+                    effective_ts = st.st_mtime
             if effective_ts is not None and effective_ts < since_ts:
                 mtime_cache[sf] = None
                 continue
         # No --since (or file passed the since check): resolve timestamp.
-        if use_birthtime:
+        if git_date is not None:
+            mtime_cache[sf] = git_date
+        elif use_birthtime:
             mtime_cache[sf] = resolve_birthtime(sf, root)
         else:
             mtime_cache[sf] = resolve_mtime(sf, root, use_ctime)
@@ -186,6 +260,12 @@ def enrich(
     # iterate per-file.  Values are (source_location, node_id) tuples.
     nodes_by_file: dict[str, list[tuple[str, str]]] = defaultdict(list)
     enriched = 0
+    # Lazily populated: one `git blame --porcelain` per unique file that
+    # actually has a git-resolved date — never per node. A file resolves to
+    # None here once and stays None (blame failed/untracked), so subsequent
+    # nodes in the same file skip straight to the file-level git date.
+    blame_cache: dict[str, dict[int, str] | None] = {}
+    author_cache: dict[str, str | None] = {}
 
     for node in nodes:
         sf = node.get("source_file")
@@ -198,6 +278,20 @@ def enrich(
                 enriched += 1
             else:
                 node["file_mtime"] = None
+
+            if git_root is not None and git_file_date_cache.get(sf):
+                relpath = git_relpaths.get(sf)
+                if relpath is not None and sf not in blame_cache:
+                    blame_cache[sf] = git_source.blame_file(git_root, relpath)
+                line = _extract_line(node.get("source_location"))
+                blame_map = blame_cache.get(sf)
+                line_date = git_source.resolve_line_date(blame_map, line)
+                node["git_commit_date"] = line_date or git_file_date_cache[sf]
+                if sf not in author_cache:
+                    author_cache[sf] = git_source.resolve_file_author(git_root, relpath) if relpath else None
+                if author_cache.get(sf):
+                    node["git_author"] = author_cache[sf]
+
             sl = node.get("source_location")
             if sl is None:
                 sl = ""

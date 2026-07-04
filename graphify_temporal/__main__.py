@@ -143,6 +143,17 @@ def main() -> None:
         action="store_true",
         help="Use st_birthtime instead of st_mtime (true creation time)",
     )
+    enrich_parser.add_argument(
+        "--git",
+        action="store_true",
+        help=(
+            "Derive timestamps from git history (author-date via log/blame) "
+            "instead of filesystem stat, for files inside a git repo — stat "
+            "mtime on a clone reflects checkout time, not real history. "
+            "Falls back to stat for untracked files or when git is unavailable. "
+            "Mutually exclusive with --use-ctime/--use-birthtime"
+        ),
+    )
     # Cross-file chaining.
     enrich_parser.add_argument(
         "--cross-file",
@@ -420,11 +431,11 @@ def main() -> None:
         parser.print_help()
         sys.exit(1)
 
-    # --use-ctime and --use-birthtime are mutually exclusive.
-    if args.use_ctime and args.use_birthtime:
+    # --use-ctime, --use-birthtime, and --git are mutually exclusive.
+    if sum([args.use_ctime, args.use_birthtime, args.git]) > 1:
         print(
-            "error: --use-ctime and --use-birthtime are mutually exclusive. "
-            "Choose one timestamp source.",
+            "error: --git, --use-ctime and --use-birthtime are mutually "
+            "exclusive. Choose one timestamp source.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -451,6 +462,7 @@ def main() -> None:
             root=root,
             use_ctime=args.use_ctime,
             use_birthtime=args.use_birthtime,
+            use_git=args.git,
             cross_file=args.cross_file,
             dry_run=args.dry_run,
             since=args.since,
