@@ -17,15 +17,21 @@ instead of filesystem stat — necessary on cloned repos, where stat timestamps
 reflect checkout time rather than real file history — adding `git_commit_date`
 (line-accurate) and `git_author` node attributes.
 
+Also provides `impact` — a read-only root-cause tracing query that walks
+every edge relation in the graph (not just the temporal chain) between one
+or two nodes, bounded by hop depth, ranked by structural + temporal
+relevance. Built for "I changed X, then Y broke — what did I touch that
+could have caused it?"
+
 Also auto-detects AI coding assistants and injects instructions via
 `graphify-temporal install` so agents know how to run temporal enrichment
-without manual setup.
+(and reach for `impact` during debugging) without manual setup.
 
 ## Documentation index
 
 | Document | Contents |
 |----------|----------|
-| [cli-reference.md](cli-reference.md) | Full CLI: `enrich`, `install`, `uninstall`, every flag, examples, error codes |
+| [cli-reference.md](cli-reference.md) | Full CLI: `enrich`, `install`, `uninstall`, `query`, `timeline`, `stats`, `impact`, every flag, examples, error codes |
 | [timestamps.md](timestamps.md) | Timestamp semantics, birthtime support, switching modes, node/edge schema, deduplication |
 | [team-setup.md](team-setup.md) | `install`/`uninstall`, client detection, OpenCode plugin, team workflow |
 | **This file** | Architecture, data flow, test plan, dependencies, non-goals |
@@ -45,14 +51,17 @@ graphify_temporal/
 │                          resolve_file_author (--git mode)
 ├── install.py           # auto-detect AI clients, inject/remove instruction blocks,
 │                          register OpenCode plugin
-└── query.py             # query nodes by label/time, build timeline, temporal stats
+└── query.py             # query nodes by label/time, build timeline, temporal stats,
+│                          impact (root-cause tracing BFS)
 tests/
 ├── __init__.py
 ├── test_enricher.py     # TestFs + TestGitSource (unit) + TestEnricher + TestEnrichGit
 │                          (integration), all via tmp_path; git tests skip if no git binary
-├── test_install.py      # block manipulation (6) + filesystem injection (18)
+├── test_install.py      # block manipulation (6) + filesystem injection (18) + impact/git
+│                          drift regression guards (2)
 └── test_query.py        # TestParseDateTs (2) + TestTsFromNode (4) + query_nodes (12)
-│                          + timeline (7) + stats (7) + CLI (3)
+│                          + timeline (7) + stats (7) + TestImpactScore (9) + TestImpact (18)
+│                          + CLI (6)
 docs/
 ├── spec.md              # This file — architecture overview
 ├── cli-reference.md     # Full CLI reference
@@ -69,7 +78,7 @@ docs/
 | `fs.py` | Stat for mtime/ctime/birthtime, dir mtime, glob filtering, date parsing, Linux statx via ctypes | `resolve_mtime()`, `resolve_birthtime()`, `resolve_dir_mtime()`, `matches_glob()`, `is_excluded()`, `parse_date()` |
 | `git_source.py` | Git-derived timestamps: repo-root/shallow detection, file-level date (`git log`), line-level date (`git blame`, one call per unique file), author name. Every function returns `None` on any failure — never raises | `git_available()`, `find_repo_root()`, `is_shallow_repo()`, `resolve_file_date()`, `blame_file()`, `resolve_line_date()`, `resolve_file_author()` |
 | `install.py` | Detect clients (11 platforms), inject/remove instruction blocks, register OpenCode plugin | `detect()`, `install()`, `uninstall()` |
-| `query.py` | Query nodes by label/time (with file-level collapse), build timeline from preceded_by edges, temporal stats | `query_nodes()`, `build_timeline()`, `temporal_stats()` |
+| `query.py` | Query nodes by label/time (with file-level collapse), build timeline from preceded_by edges, temporal stats, root-cause tracing (bounded multi-relation BFS + ranking, read-only) | `query_nodes()`, `build_timeline()`, `temporal_stats()`, `impact()` |
 
 ## Data flow (`enrich`)
 
@@ -113,6 +122,21 @@ calls (file date + blame + author), not 1500.
 2. For each detected client, write or update a `## graphify-temporal` block in the instruction file
 3. For OpenCode: also write `.opencode/plugins/graphify-temporal.js` and register in `opencode.json`
 
+## Data flow (`impact`)
+
+1. Load `graphify-out/graph.json` (same `_load_graph` as every other query function — no caching, fresh read every call)
+2. Validate both anchor node ids exist; raise `ValueError` if not (same except clause as every other CLI query command)
+3. Build an **undirected** adjacency index from `links` once — edge direction encodes provenance, not causality direction, so BFS reachability ignores it. Malformed links (missing `source`/`target`) are skipped silently.
+4. Compute `has_semantic_edges` once (`any(relation != "preceded_by")`) → `structural_confidence` field
+5. Bounded BFS from each anchor independently: `hops` deep (default 3), node-visit budget 500 total (mirrors `build_timeline`'s own `max_steps=500`), hub cap — a node with combined degree > 50 is recorded as reached but not expanded further (mirrors core graphify's `analyze.py::god_nodes` exclusion instinct)
+6. A third BFS (target-seeking, stops on hit) finds the shortest direct path between the two anchors, if any
+7. Merge: nodes reached from both anchors are `"bridge"` (strongest signal); re-discovery of an already-visited node via a *different* edge increments `alternate_paths` for it (no extra BFS cost — just a counter bump on an edge already being iterated)
+8. Score each candidate: `(3 - hop) + confidence_bonus + (2 if relation != preceded_by) + (1 if cross-community) + (1 if bridge)` — see [cli-reference.md](cli-reference.md#impact--root-cause-tracing) for the full formula
+9. Sort by score desc, then node id asc (deterministic); truncate to `max_candidates`
+10. Return a dict — never writes to `graph.json`
+
+Subprocess/complexity bound: **O(visited nodes)** per BFS call, capped by the 500-node budget and the 50-degree hub cap — never unbounded graph traversal from a single hub node.
+
 ## graph.json conventions
 
 - Edge array keyed `links`, **not** `edges` — NetworkX node-link format
@@ -139,6 +163,13 @@ calls (file date + blame + author), not 1500.
 | `--git` and file is untracked/new | That file falls back to stat silently; other git-resolved files unaffected |
 | `--git` on a shallow clone (`--depth 1`) | `mode="first"` (creation-date query) refused, since the shallow boundary would masquerade as a fake creation date; `mode="last"` (used by `enrich()`) is unaffected — the newest commit's date is real regardless of clone depth |
 | `--git` and `source_file` resolves outside the git root (e.g. `../` traversal) | `_safe_relative()` rejects it (`Path.relative_to()` raises `ValueError`), falls back to stat — never reaches subprocess |
+| `impact`: anchor node id not found | `ValueError` — CLI rejects with error, exit 1 |
+| `impact`: anchor exists but has zero edges | Not an error — `isolated_anchors` lists it, candidates empty for it |
+| `impact`: graph has zero semantic edges | Not an error — `structural_confidence: "temporal-only"`, degrades gracefully |
+| `impact`: pathological hop/hub expansion | Bounded by 500-node visit budget + 50-degree hub cap → `"truncated": true`, never hangs |
+| `impact`: node with null timestamps/source_location | Every candidate field defaults to `None` via `.get()` — pure-structural tracing still works |
+| `impact`: `--hops 0` or negative | CLI rejects before calling the core function, exit 1 |
+| `impact`: malformed edge (missing `source`/`target`) | Skipped silently while building adjacency |
 
 ## Test Plan
 
@@ -219,7 +250,7 @@ block injection, replacement, removal, idempotency, client detection
 install/uninstall, CLI help, and edge cases (no markers, missing files,
 empty files).
 
-### TestQuery — integration (35 tests)
+### TestQuery — integration (56 tests)
 
 | Group | Tests | Coverage |
 |-------|-------|----------|
@@ -227,7 +258,47 @@ empty files).
 | query_nodes | 12 | Search, since/before filters, ordering, empty timestamps, dir_mtime, file collapse |
 | build_timeline | 7 | Basic chain, start_id, since/before filters, non-preceded_by edges, cycles |
 | temporal_stats | 7 | Basic stats, empty graph, dir_mtime, gaps, median, JSON output |
-| CLI | 3 | `--help` output for query, timeline, stats |
+| CLI | 6 | `--help` output for query, timeline, stats; `impact` missing-graph exit 1, `--hops 0` rejection, `--json` output validity |
+
+### TestImpactScore — unit (9 tests)
+
+Each test varies exactly one of `_impact_score`'s 5 parameters and asserts
+the *exact* resulting score — not just relative ordering.
+
+| Test | Coverage |
+|------|----------|
+| Baseline | hop=1, EXTRACTED, semantic relation, same community, not bridge → exact score |
+| Hop term | Score decreases by exactly 1.0 per additional hop |
+| Confidence bonus | EXTRACTED − INFERRED = 1.0, INFERRED − AMBIGUOUS = 1.0 |
+| Confidence unknown value | Unrecognized confidence string defaults to bonus 0 |
+| Semantic vs temporal | Non-`preceded_by` relation scores exactly 2.0 higher |
+| Community crossing | Cross-community candidate scores exactly 1.0 higher |
+| Community `None` | A node with no community field does NOT get the crossing bonus (None ≠ "different") |
+| Bridge bonus | Bridge candidate scores exactly 1.0 higher than non-bridge |
+| All bonuses stack | Full additive formula verified against a hand-computed total |
+
+### TestImpact — integration (18 tests)
+
+| Test | Coverage |
+|------|----------|
+| Two-anchor bridge found | Node reachable from both anchors → `connection: "bridge"` |
+| Single-anchor reachable nodes | `node_b=None` → every node within `hops` of `node_a` |
+| Degraded preceded_by-only graph | `structural_confidence: "temporal-only"`, every candidate's `relation_path == ["preceded_by"]` |
+| Mixed relations rank semantic above temporal | `calls`-connected candidate outscores `preceded_by`-connected at same hop |
+| Anchor not found (a / b) | `ValueError` naming the specific missing node |
+| Isolated anchor | Anchor exists but has zero edges → no exception, `isolated_anchors` populated |
+| Hop limit respected | Nodes beyond the hop limit are absent from candidates |
+| Hub node fan-out capped | A degree>50 hub is reached but not expanded through — nodes only reachable past it are absent |
+| Node visit budget truncation | A wide binary-tree-shaped graph exceeds the 500-node budget → `truncated: true` |
+| Ranking deterministic | Identical scores tie-break by node id ascending, stable across repeated calls |
+| Direct path between anchors | Shortest path found and returned with correct relation labels |
+| No direct path when disconnected | `direct_path == []`, not an error |
+| Candidate with null timestamps | Missing `file_mtime`/`git_commit_date`/`source_file` → fields are `None`, no crash |
+| Relations filter excludes others | `relations=["calls"]` on a mixed-relation graph only returns `calls`-reached nodes |
+| Max candidates truncates | More qualifying candidates than `max_candidates` → list capped, best-scoring kept |
+| Community boundary bonus | Cross-community candidate scores higher (integration-level, complements TestImpactScore's unit-level check) |
+| Malformed edge skipped | A link missing `target` → no `KeyError`, edge simply ignored |
+| Alternate paths (multi-edge) | Two independent edges (`calls` + `references`) from the same anchor to the same candidate → `alternate_paths == 2` |
 
 ## Dependencies
 
@@ -251,6 +322,12 @@ empty files).
 - No persistent cross-invocation cache for git-resolved dates — each CLI call is
   a fresh process, and within a single run resolution is already deduplicated by
   unique file
+- No pluggable ranking-strategy interface for `impact` — one fixed additive
+  formula (5 terms), no config file for hop limit/hub cap/visit budget — those
+  are fixed constants (raise only if a real large graph proves them wrong)
+- No non-git-VCS-aware "blame" analog for `impact`'s edge walk — it walks
+  whatever `relation` values already exist in `graph.json` (calls, imports,
+  references, ...), regardless of what tool produced them
 - No CI/CD pipeline
 - No PyPI publication (pip install via git URL)
 
@@ -262,3 +339,13 @@ empty files).
   `git_author` are new optional node fields. See
   [timestamps.md](timestamps.md#git-derived-timestamps---git) for the full
   design rationale and fallback rules.
+- **v1.0.0 → `impact` (root-cause tracing)**: added `impact()` to `query.py`
+  (bounded multi-relation BFS + ranking, read-only), CLI `impact` subcommand,
+  and a "Root-cause tracing" section injected into agent instruction files
+  via `install.py` so AI coding assistants reach for it proactively during
+  debugging. Also fixed a pre-existing drift where `install.py`'s
+  `_INSTRUCTION_BLOCK` template had fallen behind the real `AGENTS.md`
+  (missing `--git` docs) — a fresh `install` would have silently overwritten
+  the richer content. See
+  [cli-reference.md](cli-reference.md#impact--root-cause-tracing) for the
+  full flag reference and ranking formula.

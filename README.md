@@ -211,6 +211,69 @@ graphify-temporal stats
 range first with `date -I` or `datetime`, then pass it to `--since`/`--before`.
 See [docs/cli-reference.md](docs/cli-reference.md#prompt-examples--what-to-ask-your-ai-agent) for a full table of realistic prompts.
 
+## Root-cause tracing (`impact`)
+
+`impact` traces structural + temporal connections between one or two nodes —
+built for the "I wrote X, then Y modified module alpha, what did I do in
+module beta that could have broken alpha?" case. It walks **every** edge
+relation in the graph (`calls`, `imports`, `references`,
+`conceptually_related_to`, `preceded_by`, ...), not just the temporal chain,
+bounded to a configurable hop depth, and ranks candidates by how relevant
+they look as a connection between the areas you named.
+
+```bash
+# How are these two areas of code connected?
+graphify-temporal impact NODE_A NODE_B
+
+# What's reachable from/at-risk around a single node?
+graphify-temporal impact NODE_A
+
+# Widen or narrow the search
+graphify-temporal impact NODE_A NODE_B --hops 5
+graphify-temporal impact NODE_A NODE_B --relations calls,references
+
+# Machine-readable output
+graphify-temporal impact NODE_A NODE_B --json
+```
+
+Node ids come from `graphify-temporal query "<search term>"` — run that first
+if you don't already know the exact id.
+
+**Read-only** — `impact` never writes to `graph.json`, safe to re-run
+repeatedly mid-debugging-session.
+
+**Ranking** combines: hop distance (closer = more relevant), edge confidence
+(`EXTRACTED` > `INFERRED` > `AMBIGUOUS`), whether the edge is a real
+structural relation vs. just `preceded_by` timestamp-chaining, whether the
+candidate crosses a community boundary, and whether it's a "bridge" — reached
+from *both* named anchors, the strongest signal available.
+
+**Degraded mode:** if the graph currently has no semantic edges (only
+`preceded_by`), results carry `"structural_confidence": "temporal-only"` —
+a clear, explicit signal (not a silent guess) that the connections shown
+reflect timestamp proximity, not confirmed code relationships. This can
+happen if `graphify` hasn't run a full semantic pass recently; consider
+`/graphify --update deep` if results look thin. See
+[docs/cli-reference.md](docs/cli-reference.md#impact--root-cause-tracing)
+for the full flag reference, output shape, and error handling.
+
+### Example: tracing a regression
+
+```bash
+graphify-temporal query "AuthModule"          # find the node id
+graphify-temporal impact auth_module database_pool --hops 3
+```
+```
+graphify-temporal v1.0.0  — impact trace: auth_module <-> database_pool
+
+  Direct path: auth_module -> connection_manager -> database_pool  (2 hops, relation: calls, references)
+
+  Candidates (bridge/neighbor, ranked):
+    #1   bridge         hop=1  score=8.0   connection_manager  (calls)  alt=2  2026-06-30T12:08:40
+    #2   neighbor-of-a  hop=1  score=6.0   session_store       (calls)        2026-06-28T09:14:02
+    ...
+```
+
 ## Team setup
 
 graphify-temporal auto-detects which AI coding assistant you're using and injects
@@ -257,7 +320,7 @@ and reminds the agent to run enrichment before it reaches for raw file reads.
 
 | Document | Contents |
 |----------|----------|
-| [docs/cli-reference.md](docs/cli-reference.md) | Complete CLI: every flag, subcommand, example, error code |
+| [docs/cli-reference.md](docs/cli-reference.md) | Complete CLI: every flag, subcommand (including `impact`), example, error code |
 | [docs/timestamps.md](docs/timestamps.md) | Timestamp semantics, birthtime support, switching modes, schema |
 | [docs/team-setup.md](docs/team-setup.md) | `install`/`uninstall`, client detection, OpenCode plugin, team workflow |
 | [docs/spec.md](docs/spec.md) | Architecture overview, data flow, test plan, dependencies, non-goals |

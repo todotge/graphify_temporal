@@ -240,6 +240,138 @@ graphify-temporal v1.0.0  — temporal stats
 
 ---
 
+## `impact` — root-cause tracing
+
+Trace structural + temporal connections between one or two nodes: given two
+areas of code, find nodes reachable from either (or both — a "bridge") within
+a bounded number of hops over **any** edge relation (`calls`, `imports`,
+`references`, `conceptually_related_to`, `preceded_by`, ...), ranked by
+relevance. Built for "I changed X, then Y broke — what did I touch that
+could have caused it?"
+
+```
+graphify-temporal impact NODE_A [NODE_B] [OPTIONS]
+```
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `NODE_A` | positional | First node id (e.g. the file/function you changed) |
+| `NODE_B` | positional, optional | Second node id (e.g. the file that broke). Omit for single-anchor mode: explore what's reachable/at-risk around `NODE_A` alone |
+| `--hops N` | int | Max traversal depth from each anchor (default: 3) |
+| `--relations REL,REL` | string | Comma-separated relation types to follow (default: all relations, including `preceded_by` — this is what makes the temporal-only degraded case visible instead of silently invisible) |
+| `--max-candidates N` | int | Cap on returned candidates, best-scoring kept (default: 25) |
+| `--json` | flag | Output as JSON instead of human-readable text |
+
+Node ids come from `graphify-temporal query "<search term>"` — run that first
+if you don't already know the exact id.
+
+**Read-only** — never writes to `graph.json`. Safe to call repeatedly during
+a debugging session.
+
+### Examples
+
+```bash
+# How are these two areas connected?
+graphify-temporal impact auth_module database_pool
+
+# What's reachable/at-risk around this node alone?
+graphify-temporal impact auth_module
+
+# Widen the search
+graphify-temporal impact auth_module database_pool --hops 5
+
+# Structural-only — exclude preceded_by timestamp-chain edges
+graphify-temporal impact auth_module database_pool --relations calls,references
+
+# Machine-readable
+graphify-temporal impact auth_module database_pool --json
+```
+
+### Ranking formula
+
+Each candidate's score is additive:
+
+```
+score = (3 - hop)                                  closer = more relevant
+      + confidence_bonus[edge's confidence]         EXTRACTED=2, INFERRED=1, AMBIGUOUS=0
+      + 2 if relation != "preceded_by"               real structural edge > temporal chaining
+      + 1 if candidate's community != anchor's       cross-community = more surprising
+      + 1 if reached from both anchors ("bridge")     strongest signal
+```
+
+Ties break by node id, ascending (deterministic output). A node reached via
+multiple independent edges (e.g. both `calls` and `references` from the same
+anchor, or from both anchors) shows `alt=N` in the human-readable output —
+independent confirmation is itself a relevance signal.
+
+### Output (human-readable)
+
+```
+graphify-temporal v1.0.0  — impact trace: auth_module <-> database_pool
+
+  Direct path: auth_module -> connection_manager -> database_pool  (2 hops, relation: calls, references)
+
+  Candidates (bridge/neighbor, ranked):
+    #1   bridge         hop=1  score=8.0   connection_manager  (calls)  alt=2  2026-06-30T12:08:40
+    #2   neighbor-of-a  hop=1  score=6.0   session_store       (calls)        2026-06-28T09:14:02
+```
+
+If the graph has no semantic edges (only `preceded_by`), a warning line
+prints first:
+```
+  [temporal-only: no semantic edges in this graph — results reflect
+  timestamp proximity only, not confirmed code relationships]
+```
+
+### Output (`--json`)
+
+```json
+{
+  "anchor_a": "auth_module",
+  "anchor_b": "database_pool",
+  "structural_confidence": "structural+temporal",
+  "direct_path": [
+    {"node_id": "connection_manager", "relation": "calls", "hop": 1},
+    {"node_id": "database_pool", "relation": "references", "hop": 2}
+  ],
+  "candidates": [
+    {
+      "node_id": "connection_manager", "label": "ConnectionManager",
+      "hop": 1, "connection": "bridge", "relation_path": ["calls"],
+      "score": 8.0, "alternate_paths": 2, "community": 3,
+      "file_mtime": "2026-06-30T12:08:40Z", "dir_mtime": null,
+      "git_commit_date": "2026-06-30T12:08:40Z", "git_author": "kemycrome",
+      "source_file": "app/db.py"
+    }
+  ],
+  "truncated": false,
+  "isolated_anchors": []
+}
+```
+
+### Error exit codes
+
+| Scenario | Exit code | Message |
+|----------|-----------|---------|
+| `graph.json` not found | 1 | `No graph.json found at ... Run \`graphify .\` first.` |
+| Invalid JSON in graph.json | 1 | `Invalid JSON in ...` |
+| `NODE_A`/`NODE_B` not found in graph | 1 | `Node '...' not found in graph` |
+| `--hops 0` or negative | 1 | `--hops must be >= 1` (rejected before calling the core query) |
+| Anchor exists but has zero edges | 0 | Not an error — `isolated_anchors` lists it, candidates empty for it |
+| Graph has zero semantic edges | 0 | Not an error — `structural_confidence: "temporal-only"` |
+| Hop/candidate budget reached | 0 | Not an error — `truncated: true`, results still returned |
+| Success | 0 | Trace printed |
+
+### Agent guidance
+
+Use this **proactively during debugging, before manually grepping**. When a
+user reports something broke and names (or you can infer) two related areas
+of code — "I changed X, then something in Y broke", "what did I touch that
+could have caused Z" — run `impact <node_a> <node_b>` first. If the result is
+`temporal-only`, treat it as weaker evidence and say so.
+
+---
+
 ## `--version`
 
 ```
@@ -286,6 +418,17 @@ agent's config, these prompts work directly:
 | `who wrote this function and when?` | `graphify-temporal enrich --git && graphify-temporal query "<name>" --full` (check `git_author`/`git_commit_date`) |
 | `use real commit history instead of file timestamps` | `graphify-temporal enrich --git` |
 | `order changes by actual commit date, not checkout date` | `graphify-temporal enrich --git --cross-file` |
+
+### Root-cause tracing
+
+| Prompt | What the agent runs |
+|--------|---------------------|
+| `I changed X, then Y broke — what did I do wrong?` | `graphify-temporal impact <node_x> <node_y>` |
+| `what could break if I touch this function?` | `graphify-temporal impact <node_id>` (single-anchor mode) |
+| `how are these two modules connected?` | `graphify-temporal impact <node_a> <node_b>` |
+| `trace a wider blast radius` | `graphify-temporal impact <node_a> <node_b> --hops 5` |
+| `only show real code relationships, not just timing` | `graphify-temporal impact <node_a> <node_b> --relations calls,references` |
+| `this used to work, what changed?` | `graphify-temporal impact <node_a> <node_b>` — check `structural_confidence`; if `temporal-only`, suggest `/graphify --update deep` first |
 
 ### Creation vs arrival
 

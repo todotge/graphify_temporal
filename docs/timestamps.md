@@ -114,6 +114,13 @@ also overwriting `file_mtime`, so that:
 - Nothing existing needs to change to keep working — `git_commit_date` is
   purely additive, ignored by every consumer that doesn't know about it yet.
 
+`impact` (see [cli-reference.md](cli-reference.md#impact--root-cause-tracing))
+is the first feature that actually surfaces `git_commit_date`/`git_author` in
+its output — each candidate node in an impact trace shows both fields when
+available, letting you see not just *that* two areas of code are connected
+but *when* and *by whom* the connecting code was last touched. `query`/
+`timeline`/`stats` still only read `file_mtime`, unchanged.
+
 ### Shallow clones (`--depth 1`)
 
 A shallow clone truncates history — the oldest commit git can see is really
