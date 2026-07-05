@@ -9,7 +9,11 @@ Enrich a [graphify](https://github.com/safishamsi/graphify) knowledge graph with
 
 Adds `file_mtime`, `file_birthtime`, `dir_mtime`, and (optionally) git-derived
 `git_commit_date`/`git_author` to nodes, plus deterministic `preceded_by` edges
-— making your knowledge graph time-aware without any LLM cost.
+— making your knowledge graph time-aware without any LLM cost. Also adds
+`impact`, a root-cause tracing query that walks the graph's structural edges
+(calls, imports, references, ...) together with its temporal history to find
+candidate causes for "I changed X, then Y broke" — instead of grepping files
+one at a time.
 
 ## What timestamps can you see?
 

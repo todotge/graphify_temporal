@@ -11,8 +11,10 @@ from graphify_temporal.query import (
     query_nodes,
     build_timeline,
     temporal_stats,
+    impact,
     _ts_from_node,
     _parse_date_ts,
+    _impact_score,
 )
 
 
@@ -461,3 +463,371 @@ class TestCLIIntegration:
         )
         assert result.returncode == 0
         assert "--json" in result.stdout
+
+    def test_impact_cli_missing_graph_exits_1(self, tmp_path):
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, "-m", "graphify_temporal", "impact", "a", "b"],
+            capture_output=True, text=True, cwd=tmp_path,
+        )
+        assert result.returncode == 1
+        assert "error:" in result.stderr
+
+    def test_impact_cli_hops_zero_rejected(self, tmp_path):
+        import subprocess, sys
+        graph_dir = tmp_path / "graphify-out"
+        graph_dir.mkdir()
+        _make_graph_json(graph_dir, [{"id": "a", "label": "a"}])
+        result = subprocess.run(
+            [sys.executable, "-m", "graphify_temporal", "impact", "a", "--hops", "0"],
+            capture_output=True, text=True, cwd=tmp_path,
+        )
+        assert result.returncode == 1
+        assert "--hops" in result.stderr
+
+    def test_impact_cli_json_output_valid(self, tmp_path):
+        import subprocess, sys, json as _json
+        graph_dir = tmp_path / "graphify-out"
+        graph_dir.mkdir()
+        _make_graph_json(
+            graph_dir,
+            [{"id": "a", "label": "a"}, {"id": "b", "label": "b"}],
+            [{"source": "a", "target": "b", "relation": "calls", "confidence": "EXTRACTED"}],
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "graphify_temporal", "impact", "a", "b", "--json"],
+            capture_output=True, text=True, cwd=tmp_path,
+        )
+        assert result.returncode == 0
+        data = _json.loads(result.stdout)
+        assert data["anchor_a"] == "a"
+        assert data["anchor_b"] == "b"
+
+
+# ---------------------------------------------------------------------------
+# TestImpactScore — unit tests for the ranking formula's 5 independent terms
+# ---------------------------------------------------------------------------
+
+
+class TestImpactScore:
+    """Each test varies exactly one of _impact_score's 5 parameters and
+    asserts the exact resulting score — impact()'s own tests only check
+    relative ordering, not that each term contributes the documented value."""
+
+    def _base_edge(self, relation="calls", confidence="EXTRACTED"):
+        return {"relation": relation, "confidence": confidence}
+
+    def test_baseline_hop1_extracted_semantic_same_community_not_bridge(self):
+        # (3-1) + confidence_bonus[EXTRACTED]=2 + non-preceded_by=2 + same-community=0 + not-bridge=0
+        score = _impact_score(
+            hop=1, edge=self._base_edge(), node_community=0, anchor_community=0, is_bridge=False,
+        )
+        assert score == 6.0
+
+    def test_hop_term_decreases_with_distance(self):
+        s1 = _impact_score(1, self._base_edge(), 0, 0, False)
+        s2 = _impact_score(2, self._base_edge(), 0, 0, False)
+        s3 = _impact_score(3, self._base_edge(), 0, 0, False)
+        assert s1 - s2 == 1.0
+        assert s2 - s3 == 1.0
+
+    def test_confidence_bonus_extracted_vs_inferred_vs_ambiguous(self):
+        s_extracted = _impact_score(1, self._base_edge(confidence="EXTRACTED"), 0, 0, False)
+        s_inferred = _impact_score(1, self._base_edge(confidence="INFERRED"), 0, 0, False)
+        s_ambiguous = _impact_score(1, self._base_edge(confidence="AMBIGUOUS"), 0, 0, False)
+        assert s_extracted - s_inferred == 1.0
+        assert s_inferred - s_ambiguous == 1.0
+
+    def test_confidence_bonus_unknown_value_defaults_to_zero(self):
+        s_known = _impact_score(1, self._base_edge(confidence="EXTRACTED"), 0, 0, False)
+        s_unknown = _impact_score(1, self._base_edge(confidence="not_a_real_value"), 0, 0, False)
+        assert s_known - s_unknown == 2.0
+
+    def test_semantic_relation_bonus_vs_preceded_by(self):
+        s_semantic = _impact_score(1, self._base_edge(relation="calls"), 0, 0, False)
+        s_temporal = _impact_score(1, self._base_edge(relation="preceded_by"), 0, 0, False)
+        assert s_semantic - s_temporal == 2.0
+
+    def test_community_crossing_bonus(self):
+        s_same = _impact_score(1, self._base_edge(), node_community=0, anchor_community=0, is_bridge=False)
+        s_diff = _impact_score(1, self._base_edge(), node_community=1, anchor_community=0, is_bridge=False)
+        assert s_diff - s_same == 1.0
+
+    def test_community_none_does_not_get_crossing_bonus(self):
+        """A node with no community field must not score as if it 'crossed'
+        into a different community — None means unknown, not different."""
+        s_none = _impact_score(1, self._base_edge(), node_community=None, anchor_community=0, is_bridge=False)
+        s_same = _impact_score(1, self._base_edge(), node_community=0, anchor_community=0, is_bridge=False)
+        assert s_none == s_same
+
+    def test_bridge_bonus(self):
+        s_neighbor = _impact_score(1, self._base_edge(), 0, 0, is_bridge=False)
+        s_bridge = _impact_score(1, self._base_edge(), 0, 0, is_bridge=True)
+        assert s_bridge - s_neighbor == 1.0
+
+    def test_all_bonuses_stack_additively(self):
+        # hop=1 (score 2) + EXTRACTED (2) + semantic (2) + cross-community (1) + bridge (1) = 8
+        score = _impact_score(
+            hop=1, edge=self._base_edge(relation="calls", confidence="EXTRACTED"),
+            node_community=1, anchor_community=0, is_bridge=True,
+        )
+        assert score == 8.0
+
+
+# ---------------------------------------------------------------------------
+# TestImpact — root-cause tracing BFS
+# ---------------------------------------------------------------------------
+
+
+class TestImpact:
+    def test_two_anchor_bridge_found(self, tmp_path):
+        """A node reachable from both anchors within 2 hops is a bridge."""
+        graph_dir = tmp_path / "graphify-out"
+        graph_dir.mkdir()
+        nodes = [{"id": n, "label": n} for n in ["a", "b", "bridge"]]
+        links = [
+            {"source": "a", "target": "bridge", "relation": "calls", "confidence": "EXTRACTED"},
+            {"source": "b", "target": "bridge", "relation": "references", "confidence": "EXTRACTED"},
+        ]
+        _make_graph_json(graph_dir, nodes, links)
+        result = impact(tmp_path, "a", "b", hops=2)
+        bridge = next(c for c in result["candidates"] if c["node_id"] == "bridge")
+        assert bridge["connection"] == "bridge"
+
+    def test_single_anchor_reachable_nodes(self, tmp_path):
+        graph_dir = tmp_path / "graphify-out"
+        graph_dir.mkdir()
+        nodes = [{"id": n, "label": n} for n in ["a", "b", "c", "far"]]
+        links = [
+            {"source": "a", "target": "b", "relation": "calls", "confidence": "EXTRACTED"},
+            {"source": "b", "target": "c", "relation": "calls", "confidence": "EXTRACTED"},
+            {"source": "c", "target": "far", "relation": "calls", "confidence": "EXTRACTED"},
+        ]
+        _make_graph_json(graph_dir, nodes, links)
+        result = impact(tmp_path, "a", hops=2)
+        ids = {c["node_id"] for c in result["candidates"]}
+        assert ids == {"b", "c"}
+        assert result["anchor_b"] is None
+        assert result["direct_path"] == []
+
+    def test_degraded_preceded_by_only_graph(self, tmp_path):
+        graph_dir = tmp_path / "graphify-out"
+        graph_dir.mkdir()
+        nodes = [{"id": n, "label": n} for n in ["a", "b"]]
+        links = [
+            {"source": "a", "target": "b", "relation": "preceded_by", "confidence": "EXTRACTED"},
+        ]
+        _make_graph_json(graph_dir, nodes, links)
+        result = impact(tmp_path, "a", "b", hops=2)
+        assert result["structural_confidence"] == "temporal-only"
+        for c in result["candidates"]:
+            assert c["relation_path"] == ["preceded_by"]
+
+    def test_mixed_relations_ranks_semantic_above_temporal(self, tmp_path):
+        graph_dir = tmp_path / "graphify-out"
+        graph_dir.mkdir()
+        nodes = [{"id": n, "label": n} for n in ["a", "b", "via_calls", "via_preceded"]]
+        links = [
+            {"source": "a", "target": "via_calls", "relation": "calls", "confidence": "EXTRACTED"},
+            {"source": "a", "target": "via_preceded", "relation": "preceded_by", "confidence": "EXTRACTED"},
+        ]
+        _make_graph_json(graph_dir, nodes, links)
+        result = impact(tmp_path, "a", hops=1)
+        by_id = {c["node_id"]: c for c in result["candidates"]}
+        assert by_id["via_calls"]["score"] > by_id["via_preceded"]["score"]
+
+    def test_node_a_not_found_raises(self, tmp_path):
+        graph_dir = tmp_path / "graphify-out"
+        graph_dir.mkdir()
+        _make_graph_json(graph_dir, [{"id": "a", "label": "a"}])
+        with pytest.raises(ValueError, match="not found"):
+            impact(tmp_path, "missing")
+
+    def test_node_b_not_found_raises(self, tmp_path):
+        graph_dir = tmp_path / "graphify-out"
+        graph_dir.mkdir()
+        _make_graph_json(graph_dir, [{"id": "a", "label": "a"}])
+        with pytest.raises(ValueError, match="missing_b"):
+            impact(tmp_path, "a", "missing_b")
+
+    def test_isolated_anchor_no_edges(self, tmp_path):
+        graph_dir = tmp_path / "graphify-out"
+        graph_dir.mkdir()
+        _make_graph_json(graph_dir, [{"id": "a", "label": "a"}, {"id": "b", "label": "b"}])
+        result = impact(tmp_path, "a", "b", hops=2)
+        assert set(result["isolated_anchors"]) == {"a", "b"}
+        assert result["candidates"] == []
+
+    def test_hop_limit_respected(self, tmp_path):
+        graph_dir = tmp_path / "graphify-out"
+        graph_dir.mkdir()
+        chain = [f"n{i}" for i in range(10)]
+        nodes = [{"id": n, "label": n} for n in chain]
+        links = [
+            {"source": chain[i], "target": chain[i + 1], "relation": "calls", "confidence": "EXTRACTED"}
+            for i in range(len(chain) - 1)
+        ]
+        _make_graph_json(graph_dir, nodes, links)
+        result = impact(tmp_path, "n0", hops=2)
+        ids = {c["node_id"] for c in result["candidates"]}
+        assert ids == {"n1", "n2"}
+        assert "n3" not in ids
+
+    def test_hub_node_fan_out_capped(self, tmp_path):
+        """A hub with degree > cap isn't expanded past — its neighbors'
+        neighbors (reachable only through the hub) are absent."""
+        from graphify_temporal.query import _IMPACT_HUB_DEGREE_CAP
+        graph_dir = tmp_path / "graphify-out"
+        graph_dir.mkdir()
+        spokes = [f"spoke{i}" for i in range(_IMPACT_HUB_DEGREE_CAP + 5)]
+        nodes = [{"id": "a", "label": "a"}, {"id": "hub", "label": "hub"}, {"id": "beyond", "label": "beyond"}]
+        nodes += [{"id": s, "label": s} for s in spokes]
+        links = [{"source": "a", "target": "hub", "relation": "calls", "confidence": "EXTRACTED"}]
+        links += [{"source": "hub", "target": s, "relation": "calls", "confidence": "EXTRACTED"} for s in spokes]
+        links += [{"source": spokes[0], "target": "beyond", "relation": "calls", "confidence": "EXTRACTED"}]
+        _make_graph_json(graph_dir, nodes, links)
+        result = impact(tmp_path, "a", hops=3)
+        ids = {c["node_id"] for c in result["candidates"]}
+        assert "hub" in ids
+        assert "beyond" not in ids  # only reachable by expanding through the capped hub
+
+    def test_node_visit_budget_truncation(self, tmp_path):
+        """A binary-tree-shaped graph (branching factor 2, well under the hub
+        cap per node) reaches thousands of nodes within a handful of hops —
+        exceeding the visit budget without any single node being a hub."""
+        from graphify_temporal.query import _IMPACT_VISIT_BUDGET
+        graph_dir = tmp_path / "graphify-out"
+        graph_dir.mkdir()
+        node_ids = ["a"]
+        links = []
+        frontier = ["a"]
+        depth = 0
+        while len(node_ids) < _IMPACT_VISIT_BUDGET + 50 and depth < 20:
+            next_frontier = []
+            for parent in frontier:
+                for branch in ("L", "R"):
+                    child = f"{parent}{branch}"
+                    node_ids.append(child)
+                    links.append({"source": parent, "target": child, "relation": "calls", "confidence": "EXTRACTED"})
+                    next_frontier.append(child)
+            frontier = next_frontier
+            depth += 1
+        nodes = [{"id": n, "label": n} for n in node_ids]
+        _make_graph_json(graph_dir, nodes, links)
+        result = impact(tmp_path, "a", hops=20)
+        assert result["truncated"] is True
+
+    def test_ranking_is_deterministic(self, tmp_path):
+        graph_dir = tmp_path / "graphify-out"
+        graph_dir.mkdir()
+        nodes = [{"id": n, "label": n} for n in ["a", "zzz", "aaa"]]
+        links = [
+            {"source": "a", "target": "zzz", "relation": "calls", "confidence": "EXTRACTED"},
+            {"source": "a", "target": "aaa", "relation": "calls", "confidence": "EXTRACTED"},
+        ]
+        _make_graph_json(graph_dir, nodes, links)
+        r1 = impact(tmp_path, "a", hops=1)
+        r2 = impact(tmp_path, "a", hops=1)
+        ids1 = [c["node_id"] for c in r1["candidates"]]
+        ids2 = [c["node_id"] for c in r2["candidates"]]
+        assert ids1 == ids2 == ["aaa", "zzz"]  # tie-break: node id ascending
+
+    def test_direct_path_between_anchors(self, tmp_path):
+        graph_dir = tmp_path / "graphify-out"
+        graph_dir.mkdir()
+        nodes = [{"id": n, "label": n} for n in ["a", "mid", "b"]]
+        links = [
+            {"source": "a", "target": "mid", "relation": "calls", "confidence": "EXTRACTED"},
+            {"source": "mid", "target": "b", "relation": "references", "confidence": "EXTRACTED"},
+        ]
+        _make_graph_json(graph_dir, nodes, links)
+        result = impact(tmp_path, "a", "b", hops=3)
+        assert [s["node_id"] for s in result["direct_path"]] == ["mid", "b"]
+        assert [s["relation"] for s in result["direct_path"]] == ["calls", "references"]
+
+    def test_no_direct_path_when_disconnected(self, tmp_path):
+        graph_dir = tmp_path / "graphify-out"
+        graph_dir.mkdir()
+        nodes = [{"id": "a", "label": "a"}, {"id": "b", "label": "b"}]
+        _make_graph_json(graph_dir, nodes, [])
+        result = impact(tmp_path, "a", "b", hops=2)
+        assert result["direct_path"] == []
+
+    def test_candidate_with_null_timestamps(self, tmp_path):
+        graph_dir = tmp_path / "graphify-out"
+        graph_dir.mkdir()
+        nodes = [{"id": "a", "label": "a"}, {"id": "b", "label": "b"}]  # no file_mtime etc at all
+        links = [{"source": "a", "target": "b", "relation": "calls", "confidence": "EXTRACTED"}]
+        _make_graph_json(graph_dir, nodes, links)
+        result = impact(tmp_path, "a", hops=1)
+        c = result["candidates"][0]
+        assert c["file_mtime"] is None
+        assert c["git_commit_date"] is None
+        assert c["git_author"] is None
+
+    def test_relations_filter_excludes_others(self, tmp_path):
+        graph_dir = tmp_path / "graphify-out"
+        graph_dir.mkdir()
+        nodes = [{"id": n, "label": n} for n in ["a", "via_calls", "via_imports"]]
+        links = [
+            {"source": "a", "target": "via_calls", "relation": "calls", "confidence": "EXTRACTED"},
+            {"source": "a", "target": "via_imports", "relation": "imports", "confidence": "EXTRACTED"},
+        ]
+        _make_graph_json(graph_dir, nodes, links)
+        result = impact(tmp_path, "a", hops=1, relations=["calls"])
+        ids = {c["node_id"] for c in result["candidates"]}
+        assert ids == {"via_calls"}
+
+    def test_max_candidates_truncates_list(self, tmp_path):
+        graph_dir = tmp_path / "graphify-out"
+        graph_dir.mkdir()
+        spokes = [f"n{i}" for i in range(10)]
+        nodes = [{"id": "a", "label": "a"}] + [{"id": s, "label": s} for s in spokes]
+        links = [{"source": "a", "target": s, "relation": "calls", "confidence": "EXTRACTED"} for s in spokes]
+        _make_graph_json(graph_dir, nodes, links)
+        result = impact(tmp_path, "a", hops=1, max_candidates=3)
+        assert len(result["candidates"]) == 3
+
+    def test_community_boundary_bonus(self, tmp_path):
+        graph_dir = tmp_path / "graphify-out"
+        graph_dir.mkdir()
+        nodes = [
+            {"id": "a", "label": "a", "community": 0},
+            {"id": "same_community", "label": "x", "community": 0},
+            {"id": "diff_community", "label": "y", "community": 1},
+        ]
+        links = [
+            {"source": "a", "target": "same_community", "relation": "calls", "confidence": "EXTRACTED"},
+            {"source": "a", "target": "diff_community", "relation": "calls", "confidence": "EXTRACTED"},
+        ]
+        _make_graph_json(graph_dir, nodes, links)
+        result = impact(tmp_path, "a", hops=1)
+        by_id = {c["node_id"]: c for c in result["candidates"]}
+        assert by_id["diff_community"]["score"] > by_id["same_community"]["score"]
+
+    def test_alternate_paths_counts_multiple_edges_same_anchor(self, tmp_path):
+        """Two independent edges from the same anchor to the same candidate
+        (e.g. both `calls` and `references`) is stronger evidence than one —
+        alternate_paths must reflect that, not just the binary bridge case."""
+        graph_dir = tmp_path / "graphify-out"
+        graph_dir.mkdir()
+        nodes = [{"id": "a", "label": "a"}, {"id": "target", "label": "target"}]
+        links = [
+            {"source": "a", "target": "target", "relation": "calls", "confidence": "EXTRACTED"},
+            {"source": "a", "target": "target", "relation": "references", "confidence": "EXTRACTED"},
+        ]
+        _make_graph_json(graph_dir, nodes, links)
+        result = impact(tmp_path, "a", hops=1)
+        assert result["candidates"][0]["alternate_paths"] == 2
+
+    def test_malformed_edge_skipped_not_crashed(self, tmp_path):
+        graph_dir = tmp_path / "graphify-out"
+        graph_dir.mkdir()
+        nodes = [{"id": "a", "label": "a"}, {"id": "b", "label": "b"}]
+        links = [
+            {"source": "a", "relation": "calls"},  # missing target
+            {"source": "a", "target": "b", "relation": "calls", "confidence": "EXTRACTED"},
+        ]
+        _make_graph_json(graph_dir, nodes, links)
+        result = impact(tmp_path, "a", hops=1)  # must not raise
+        assert {c["node_id"] for c in result["candidates"]} == {"b"}

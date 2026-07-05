@@ -1,20 +1,24 @@
 """Query a graphify-temporal enriched graph: search, filter by time, timeline.
 
 Zero runtime dependencies — reads graphify-out/graph.json and applies
-temporal filters to nodes.  Three entry points:
+temporal filters to nodes.  Four entry points:
 
   query_nodes     — search nodes by label/id, filter by file_mtime or dir_mtime
   build_timeline  — walk preceded_by chains and return ordered steps
   temporal_stats  — summary: coverage, gaps, oldest/newest
+  impact          — bounded BFS between two nodes over ALL edge relations
+                     (not just preceded_by), ranked by structural + temporal
+                     relevance — root-cause tracing for debugging
 """
 
 from __future__ import annotations
 
 import json
+from collections import deque
 from pathlib import Path
 from typing import Any
 
-from .fs import parse_date as _parse_date_ts
+from .fs import parse_date as _parse_date_ts, iso_to_epoch
 
 
 def _load_graph(root: Path) -> dict[str, Any]:
@@ -34,18 +38,14 @@ def _load_graph(root: Path) -> dict[str, Any]:
 def _ts_from_node(node: dict, key: str) -> float | None:
     """Extract a timestamp float from a node's ISO 8601 string attribute.
 
-    Returns None when the field is missing or null.  Uses
-    ``calendar.timegm`` (UTC) to match the gmtime-based timestamps
-    written by the enricher.
+    Returns None when the field is missing or null. Delegates the actual
+    parsing to fs.iso_to_epoch (UTC, matches the gmtime-based timestamps
+    written by the enricher).
     """
-    import calendar, time
     val = node.get(key)
     if not val:
         return None
-    try:
-        return float(calendar.timegm(time.strptime(val, "%Y-%m-%dT%H:%M:%SZ")))
-    except (ValueError, TypeError):
-        return None
+    return iso_to_epoch(val)
 
 
 # ---------------------------------------------------------------------------
@@ -380,4 +380,292 @@ def temporal_stats(root: Path) -> dict[str, Any]:
         "avg_gap_seconds": avg_gap,
         "longest_gap_seconds": longest_gap_secs,
         "longest_gap_pair": list(longest_gap_pair),
+    }
+
+
+# ---------------------------------------------------------------------------
+# impact — root-cause tracing via bounded multi-relation BFS
+# ---------------------------------------------------------------------------
+
+# Node-visit budget per BFS call — same order of magnitude as build_timeline's
+# own max_steps=500 default, not a new number invented from nothing.
+_IMPACT_VISIT_BUDGET = 500
+
+# Hub cap: a node with this much combined degree stops being expanded further
+# (its neighbors are still recorded as reached, just not fanned out through).
+# 500/50 are deliberately fixed, not configurable — no config file was asked
+# for. Mirrors core graphify's own god-node exclusion instinct in analyze.py.
+# ponytail: fixed constants, well above any observed real-world node degree
+# in this repo's own graphs (max 36) — raise only if a real large graph
+# proves 50 too low.
+_IMPACT_HUB_DEGREE_CAP = 50
+
+_IMPACT_CONFIDENCE_BONUS = {"EXTRACTED": 2, "INFERRED": 1, "AMBIGUOUS": 0}
+
+
+def _build_adjacency(links: list[dict[str, Any]]) -> dict[str, list[tuple[str, dict[str, Any]]]]:
+    """Undirected adjacency: node id -> [(neighbor_id, edge_dict), ...].
+
+    Undirected because BFS reachability for root-cause tracing cares about
+    "is there a recorded relationship", not the direction of the edge — a
+    bug in alpha caused by beta can be recorded as either `beta calls alpha`
+    or `alpha references beta`. Malformed links (missing source/target) are
+    skipped silently, never crash the traversal.
+    """
+    adjacency: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+    for e in links:
+        src = e.get("source")
+        tgt = e.get("target")
+        if not src or not tgt:
+            continue
+        adjacency.setdefault(src, []).append((tgt, e))
+        adjacency.setdefault(tgt, []).append((src, e))
+    return adjacency
+
+
+def _impact_bfs(
+    start: str,
+    adjacency: dict[str, list[tuple[str, dict[str, Any]]]],
+    hops: int,
+    relations: set[str] | None,
+) -> tuple[dict[str, tuple[int, dict[str, Any], int]], bool]:
+    """Bounded BFS from *start*. Returns ({node_id: (hop, best_edge, edge_count)}, truncated).
+
+    best_edge is the edge used to first reach that node (for relation_path
+    display) — when a node is reached via multiple edges, the first BFS
+    discovery (shortest hop, breadth-first order) wins, which is also the
+    edge used for ranking. edge_count is how many distinct edges (from any
+    already-visited node) lead to this node — a node linked via both `calls`
+    and `references` independently is a stronger signal than one reached a
+    single way, even though only the first-discovered edge drives its score.
+    Counting re-discoveries costs nothing extra (no re-queueing, no path
+    storage) — just one counter bump per edge already being iterated.
+    Hub nodes (degree > _IMPACT_HUB_DEGREE_CAP) are recorded as reached but
+    not expanded further, so one central node can't turn a 3-hop trace into
+    "the whole graph".
+    """
+    reached: dict[str, tuple[int, dict[str, Any], int]] = {}
+    visited: set[str] = {start}
+    queue: deque[tuple[str, int]] = deque([(start, 0)])
+    truncated = False
+
+    while queue:
+        node_id, hop = queue.popleft()
+        if hop >= hops:
+            continue
+        neighbors = adjacency.get(node_id, [])
+        if len(neighbors) > _IMPACT_HUB_DEGREE_CAP:
+            continue  # hub: don't fan out through it further
+        for neighbor_id, edge in neighbors:
+            if relations is not None and edge.get("relation") not in relations:
+                continue
+            if neighbor_id in visited:
+                if neighbor_id in reached:
+                    h, e, count = reached[neighbor_id]
+                    reached[neighbor_id] = (h, e, count + 1)
+                continue
+            if len(visited) >= _IMPACT_VISIT_BUDGET:
+                truncated = True
+                break
+            visited.add(neighbor_id)
+            reached[neighbor_id] = (hop + 1, edge, 1)
+            queue.append((neighbor_id, hop + 1))
+        if truncated:
+            break
+
+    return reached, truncated
+
+
+def _impact_shortest_path(
+    start: str,
+    goal: str,
+    adjacency: dict[str, list[tuple[str, dict[str, Any]]]],
+) -> list[dict[str, Any]]:
+    """Shortest path start -> goal via plain BFS, target-seeking (stops on hit).
+
+    Returns [] when no path exists or start == goal (trivial, nothing to
+    report) within the visit budget. Each step: {node_id, relation, hop}.
+    """
+    if start == goal:
+        return []
+    visited: set[str] = {start}
+    queue: deque[tuple[str, list[dict[str, Any]]]] = deque([(start, [])])
+    while queue:
+        node_id, path = queue.popleft()
+        if len(visited) >= _IMPACT_VISIT_BUDGET:
+            break
+        for neighbor_id, edge in adjacency.get(node_id, []):
+            if neighbor_id in visited:
+                continue
+            new_path = path + [{
+                "node_id": neighbor_id,
+                "relation": edge.get("relation", ""),
+                "hop": len(path) + 1,
+            }]
+            if neighbor_id == goal:
+                return new_path
+            visited.add(neighbor_id)
+            queue.append((neighbor_id, new_path))
+    return []
+
+
+def _impact_score(
+    hop: int,
+    edge: dict[str, Any],
+    node_community: Any,
+    anchor_community: Any,
+    is_bridge: bool,
+) -> float:
+    """Ranking formula — mirrors core graphify's analyze.py::_surprise_score
+    additive-bonus shape, built from fields this schema actually has.
+
+    score = (3 - hop)                                closer = more relevant
+          + confidence_bonus[edge's confidence]       trust structural certainty
+          + 2 if relation != "preceded_by"             semantic edge > temporal chain
+          + 1 if node_community != anchor_community    cross-community = more surprising
+          + 1 if is_bridge                             reached from both anchors
+    """
+    score = (3 - hop)
+    score += _IMPACT_CONFIDENCE_BONUS.get(edge.get("confidence", ""), 0)
+    if edge.get("relation") != "preceded_by":
+        score += 2
+    if node_community is not None and node_community != anchor_community:
+        score += 1
+    if is_bridge:
+        score += 1
+    return float(score)
+
+
+def impact(
+    root: Path,
+    node_a: str,
+    node_b: str | None = None,
+    hops: int = 3,
+    relations: list[str] | None = None,
+    max_candidates: int = 25,
+) -> dict[str, Any]:
+    """Trace structural + temporal connections between one or two nodes.
+
+    Root-cause tracing: given two areas of code (node_a, node_b), find nodes
+    that are reachable from either (or both — "bridge" nodes) within *hops*
+    steps over ANY edge relation (calls, references, imports,
+    conceptually_related_to, preceded_by, ...), ranked by how relevant they
+    look as a connection between the two. With node_b omitted, explores
+    what's reachable/at-risk around node_a alone.
+
+    Read-only — never writes to graph.json. Safe to call repeatedly.
+
+    Parameters
+    ----------
+    root : Path
+        Project root containing graphify-out/graph.json.
+    node_a : str
+        First anchor node id. Raises ValueError if not found in the graph.
+    node_b : str | None
+        Second anchor node id (optional). Raises ValueError if given but not
+        found. When None, single-anchor mode: every node reached from
+        node_a is a candidate.
+    hops : int
+        Max traversal depth from each anchor (default 3).
+    relations : list[str] | None
+        If given, only follow edges whose `relation` is in this list.
+        Default None follows every relation, including preceded_by — this
+        is what makes the temporal-only degraded case visible instead of
+        silently invisible.
+    max_candidates : int
+        Cap on returned candidates (default 25), best-scoring kept.
+
+    Returns
+    -------
+    dict
+        Keys: anchor_a, anchor_b, structural_confidence, direct_path,
+        candidates (list, score-desc then node_id-asc), truncated,
+        isolated_anchors.
+    """
+    data = _load_graph(root)
+    nodes: list[dict[str, Any]] = data.get("nodes", [])
+    links: list[dict[str, Any]] = data.get("links", [])
+    nodes_by_id: dict[str, dict[str, Any]] = {n["id"]: n for n in nodes}
+
+    if node_a not in nodes_by_id:
+        raise ValueError(f"Node '{node_a}' not found in graph")
+    if node_b is not None and node_b not in nodes_by_id:
+        raise ValueError(f"Node '{node_b}' not found in graph")
+
+    relation_set = set(relations) if relations else None
+    adjacency = _build_adjacency(links)
+    has_semantic_edges = any(e.get("relation") != "preceded_by" for e in links)
+
+    isolated_anchors = [
+        n for n in (node_a, node_b)
+        if n is not None and not adjacency.get(n)
+    ]
+
+    reached_a, truncated_a = _impact_bfs(node_a, adjacency, hops, relation_set)
+    reached_b, truncated_b = ({}, False)
+    if node_b is not None:
+        reached_b, truncated_b = _impact_bfs(node_b, adjacency, hops, relation_set)
+
+    direct_path: list[dict[str, Any]] = []
+    if node_b is not None:
+        direct_path = _impact_shortest_path(node_a, node_b, adjacency)
+
+    community_a = nodes_by_id.get(node_a, {}).get("community")
+
+    # Merge reached sets: bridge nodes win the label; otherwise keep the
+    # best (lowest-hop) discovery between the two BFS runs for scoring.
+    # alternate_paths sums the distinct-edge counts from each BFS that
+    # reached this node — a node linked via two independent edges from the
+    # SAME anchor (e.g. both `calls` and `references`) counts as 2, same as
+    # a node reached once from each anchor (the bridge case); both are
+    # genuinely stronger evidence than a single link and should read that way.
+    all_ids = set(reached_a) | set(reached_b)
+    candidates: list[dict[str, Any]] = []
+    for nid in all_ids:
+        in_a = nid in reached_a
+        in_b = nid in reached_b
+        is_bridge = in_a and in_b
+        if in_a and (not in_b or reached_a[nid][0] <= reached_b[nid][0]):
+            hop, edge, _ = reached_a[nid]
+            connection = "bridge" if is_bridge else "neighbor-of-a"
+        else:
+            hop, edge, _ = reached_b[nid]
+            connection = "bridge" if is_bridge else "neighbor-of-b"
+
+        node = nodes_by_id.get(nid, {})
+        node_community = node.get("community")
+        score = _impact_score(hop, edge, node_community, community_a, is_bridge)
+        alternate_paths = (
+            (reached_a[nid][2] if in_a else 0) + (reached_b[nid][2] if in_b else 0)
+        )
+
+        candidates.append({
+            "node_id": nid,
+            "label": node.get("label", nid),
+            "hop": hop,
+            "connection": connection,
+            "relation_path": [edge.get("relation", "")],
+            "score": score,
+            "alternate_paths": alternate_paths,
+            "community": node_community,
+            "file_mtime": node.get("file_mtime"),
+            "dir_mtime": node.get("dir_mtime"),
+            "git_commit_date": node.get("git_commit_date"),
+            "git_author": node.get("git_author"),
+            "source_file": node.get("source_file"),
+        })
+
+    candidates.sort(key=lambda c: (-c["score"], c["node_id"]))
+    truncated = truncated_a or truncated_b
+    if len(candidates) > max_candidates:
+        candidates = candidates[:max_candidates]
+
+    return {
+        "anchor_a": node_a,
+        "anchor_b": node_b,
+        "structural_confidence": "structural+temporal" if has_semantic_edges else "temporal-only",
+        "direct_path": direct_path,
+        "candidates": candidates,
+        "truncated": truncated,
+        "isolated_anchors": isolated_anchors,
     }

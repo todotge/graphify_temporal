@@ -27,7 +27,7 @@ from typing import Any
 
 from .fs import (
     resolve_mtime, resolve_birthtime, resolve_dir_mtime,
-    matches_glob, is_excluded, parse_date,
+    matches_glob, is_excluded, parse_date, iso_to_epoch,
 )
 from . import git_source
 
@@ -49,16 +49,6 @@ def _extract_line(source_location: Any) -> int:
         return 0
     m = re.search(r":L(\d+)$", str(source_location))
     return int(m.group(1)) if m else 0
-
-
-def _iso_to_epoch(iso: str) -> float | None:
-    """Parse the fs.py/git_source.py ``...Z`` ISO 8601 shape back to epoch."""
-    import calendar
-    import time as _time
-    try:
-        return float(calendar.timegm(_time.strptime(iso, "%Y-%m-%dT%H:%M:%SZ")))
-    except (ValueError, TypeError):
-        return None
 
 
 def _safe_relative(git_root: Path, abs_path: Path) -> str | None:
@@ -214,7 +204,7 @@ def enrich(
                 # git supplies a trustworthy date directly — skip the stat
                 # pre-check entirely (a clone's stat mtime is an artifact of
                 # checkout time, not a signal to filter on).
-                effective_ts = _iso_to_epoch(git_date)
+                effective_ts = iso_to_epoch(git_date)
             else:
                 # --since path: stat the file ourselves so we can skip old
                 # ones before ever calling resolve_mtime.

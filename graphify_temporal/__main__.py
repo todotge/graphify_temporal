@@ -12,7 +12,7 @@ from pathlib import Path
 from . import __version__
 from .enricher import enrich, regenerate_outputs
 from .install import detect, install as _install, uninstall as _uninstall
-from .query import query_nodes, build_timeline, temporal_stats
+from .query import query_nodes, build_timeline, temporal_stats, impact
 
 
 def _print_install_results(results: dict[str, bool]) -> None:
@@ -89,6 +89,45 @@ def _print_stats(s: dict) -> None:
     if s["median_gap_seconds"] > 0:
         print(f"  Median gap (edges):    {_fmt_duration(s['median_gap_seconds'])}")
         print(f"  Longest gap:           {_fmt_duration(s['longest_gap_seconds'])}  ({s['longest_gap_pair'][0]} → {s['longest_gap_pair'][1]})")
+
+
+def _print_impact(result: dict) -> None:
+    """Print a human-readable impact trace: direct path + ranked candidates."""
+    a, b = result["anchor_a"], result["anchor_b"]
+    print(f"graphify-temporal v{__version__}  — impact trace: {a} <-> {b or '(none)'}")
+
+    if result["structural_confidence"] == "temporal-only":
+        print(
+            "  [temporal-only: no semantic edges in this graph — results reflect "
+            "timestamp proximity only, not confirmed code relationships]"
+        )
+
+    if result["isolated_anchors"]:
+        for n in result["isolated_anchors"]:
+            print(f"  (note: '{n}' has no recorded edges — check the file directly)")
+
+    if result["direct_path"]:
+        chain = " -> ".join([a] + [s["node_id"] for s in result["direct_path"]])
+        last_hop = result["direct_path"][-1]["hop"]
+        rels = ", ".join(s["relation"] for s in result["direct_path"])
+        print(f"\n  Direct path: {chain}  ({last_hop} hops, relation: {rels})")
+    elif b:
+        print(f"\n  Direct path: none found within the hop limit")
+
+    print("\n  Candidates (bridge/neighbor, ranked):")
+    if not result["candidates"]:
+        print("    (no results)")
+    for i, c in enumerate(result["candidates"], 1):
+        mt = (c.get("file_mtime") or "")[:19]
+        rels = ",".join(c["relation_path"])
+        alt = f"  alt={c['alternate_paths']}" if c.get("alternate_paths", 0) > 1 else ""
+        print(
+            f"    #{i:<3} {c['connection']:<14s} hop={c['hop']}  "
+            f"score={c['score']:<5} {c['node_id']:<30s} ({rels}){alt}  {mt}"
+        )
+
+    if result["truncated"]:
+        print("\n  (truncated — hop/candidate budget reached)")
 
 
 def _pct(part: int, total: int) -> float:
@@ -317,6 +356,48 @@ def main() -> None:
         help="Output as JSON instead of human-readable text",
     )
 
+    # ---- impact subcommand --------------------------------------------------
+    impact_parser = sub.add_parser(
+        "impact",
+        help="Trace structural + temporal connections between two areas of code (root-cause tracing)",
+    )
+    impact_parser.add_argument(
+        "node_a",
+        help="First node id (e.g. the file/function you changed)",
+    )
+    impact_parser.add_argument(
+        "node_b",
+        nargs="?",
+        default=None,
+        help="Second node id (e.g. the file that broke). Omit to explore what's reachable from node_a alone",
+    )
+    impact_parser.add_argument(
+        "--hops",
+        type=int,
+        default=3,
+        metavar="N",
+        help="Max traversal depth (default: 3)",
+    )
+    impact_parser.add_argument(
+        "--relations",
+        type=str,
+        default=None,
+        metavar="REL,REL",
+        help="Comma-separated relation types to follow (default: all relations, including preceded_by)",
+    )
+    impact_parser.add_argument(
+        "--max-candidates",
+        type=int,
+        default=25,
+        metavar="N",
+        help="Max candidates to show (default: 25)",
+    )
+    impact_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output as JSON instead of human-readable text",
+    )
+
     args = parser.parse_args()
 
     if args.command == "install":
@@ -423,6 +504,31 @@ def main() -> None:
             print(_json.dumps(_stats_json(s), indent=2, ensure_ascii=False))
         else:
             _print_stats(s)
+        return
+
+    if args.command == "impact":
+        root = Path(".").resolve()
+        if args.hops < 1:
+            print("error: --hops must be >= 1", file=sys.stderr)
+            sys.exit(1)
+        relations = args.relations.split(",") if args.relations else None
+        try:
+            result = impact(
+                root,
+                node_a=args.node_a,
+                node_b=args.node_b,
+                hops=args.hops,
+                relations=relations,
+                max_candidates=args.max_candidates,
+            )
+        except (FileNotFoundError, ValueError, OSError) as e:
+            print(f"error: {e}", file=sys.stderr)
+            sys.exit(1)
+        if args.json:
+            import json as _json
+            print(_json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            _print_impact(result)
         return
 
     # argparse will set command to the subparser name when matched, or None

@@ -72,6 +72,21 @@ def parse_date(date_str: str) -> float:
         )
 
 
+def iso_to_epoch(iso: str) -> float | None:
+    """Parse the ``...Z`` ISO 8601 shape (as written by resolve_mtime,
+    resolve_birthtime, git_source.py) back to a UTC epoch float.
+
+    Returns None on any malformed input — never raises. Shared by
+    enricher.py's --since comparison and query.py's node timestamp reads,
+    which both need the exact inverse of the gmtime-based format this
+    module writes.
+    """
+    try:
+        return float(calendar.timegm(time.strptime(iso, "%Y-%m-%dT%H:%M:%SZ")))
+    except (ValueError, TypeError):
+        return None
+
+
 # ---------------------------------------------------------------------------
 # birth time — true creation time, distinct from st_ctime on Unix
 # ---------------------------------------------------------------------------

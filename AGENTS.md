@@ -139,17 +139,15 @@ graphify-temporal enrich --exclude GLOB      # exclude files by glob (repeatable
 
 > **Why `--git` exists:** on a cloned repo (GitHub, CI checkout, etc.) `stat()`
 > mtime/birthtime reflect the moment of `git clone`/`checkout`, not the file's
-> real history — every file lands with nearly the same timestamp, making the
-> default enrichment nearly useless for tracing real changes. `--git` derives
-> dates from `git log`/`git blame` instead: one `git log` call per unique file
-> for the file-level date, one `git blame --porcelain` call per unique file
-> (parsed once into a `{line: date}` map) for line-level `git_commit_date` per
-> node. Falls back to stat automatically per-file when git is missing, the
-> file is untracked, or the path isn't inside a git repo — never a crash.
-> Mutually exclusive with `--use-ctime`/`--use-birthtime` (reject, don't
-> silently override). Adds `git_commit_date`/`git_author` as new node fields;
-> `file_mtime` itself is untouched so existing `query`/`timeline`/`stats`
-> consumers keep working unchanged.
+> real history — every file lands with nearly the same timestamp. `--git`
+> derives dates from `git log`/`git blame` instead: file-level date via one
+> `git log` call per unique file, line-accurate `git_commit_date` per node via
+> one `git blame --porcelain` call per unique file. Falls back to stat
+> automatically when git is missing, the file is untracked, or the path isn't
+> a git repo — never a crash. Mutually exclusive with
+> `--use-ctime`/`--use-birthtime`. `file_mtime` itself is untouched by other
+> modes; only `--git` may source it from git — `query`/`timeline`/`stats`
+> keep working unchanged either way.
 
 ### Install into AI assistant
 ```bash
@@ -175,6 +173,35 @@ compute the date range with `date -I` or `datetime` first, then pass it to
 `--since` / `--before`.  The tool requires explicit YYYY-MM-DD dates — it
 does not understand relative time expressions.
 
+### Root-cause tracing
+```bash
+graphify-temporal impact NODE_A NODE_B       # how are these two areas connected?
+graphify-temporal impact NODE_A              # what's reachable/at-risk around this node?
+graphify-temporal impact NODE_A NODE_B --hops 5          # widen the search
+graphify-temporal impact NODE_A NODE_B --relations calls,references  # structural-only, no preceded_by
+graphify-temporal impact NODE_A NODE_B --json            # machine-readable
+```
+
+**Use this proactively during debugging, before manually grepping.** When a user
+reports something broke and names (or you can infer) two related areas of code —
+"I changed X, then something in Y broke", "what did I touch that could have
+caused Z", "this used to work, what changed" — run
+`graphify-temporal impact <node_a> <node_b>` first. It walks the graph's
+structural edges (calls, imports, references, ...) and temporal history
+together and ranks candidate root causes, instead of you reading files one at
+a time hoping to spot the connection.
+
+Node ids come from `graphify-temporal query "<search term>"` or `graphify
+query` — run one of those first if you don't already know the exact node id.
+
+If the result says `"structural_confidence": "temporal-only"` (or the CLI
+prints a `[temporal-only]` warning), the graph currently has no semantic edges
+(calls/imports/references/etc.) — only `preceded_by` timestamp-chain edges.
+Treat those results as weaker evidence (temporal proximity, not a confirmed
+code relationship) and say so if you report them to the user. This can happen
+if graphify hasn't run a full semantic pass recently — consider suggesting
+`/graphify --update deep` if results look thin.
+
 ### Testing
 ```bash
 .venv/bin/pytest tests/ -v
@@ -182,10 +209,11 @@ does not understand relative time expressions.
 
 ### Key facts
 - Zero runtime dependencies — stdlib only, Python >= 3.10 (git itself is an
-  external binary invoked via subprocess, not a pip dependency)
+  external binary invoked via subprocess for `--git`, not a pip dependency)
 - Idempotent — safe to re-run with different flags (updates in-place)
 - Works on Linux, macOS, and Windows
 - `st_birthtime` supported on Linux (kernel >= 4.11), macOS, Windows
 - `--git` requires the `git` binary on PATH and a git working tree; absent
   either, enrichment falls back to stat automatically (no crash, one notice)
-
+- `impact` is read-only — never writes to graph.json, safe to re-run anytime
+  during a debugging session
