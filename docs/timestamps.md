@@ -56,6 +56,89 @@ metadata-change time on Unix.  Resolution tries, in order:
 | macOS | `os.stat().st_birthtime` | macOS ≥ 10.4 |
 | Windows | `os.stat().st_birthtime` | native |
 
+## Git-derived timestamps (`--git`)
+
+### Why filesystem timestamps fail on cloned repos
+
+`file_mtime`/`file_birthtime` come from `stat()` — they reflect what happened
+to the file **on this disk**. On a repo obtained via `git clone` (GitHub,
+GitLab, a CI checkout, anything), every file is written to disk at checkout
+time, so `mtime`/`birthtime` cluster around the moment of the clone —
+regardless of when the code was actually written. The default enrichment is
+close to useless for tracing real history on a freshly cloned repo.
+
+`--git` fixes this by reading dates out of the repo's own commit history
+instead of the filesystem:
+
+```bash
+graphify-temporal enrich --git
+```
+
+### Resolution order
+
+For each unique `source_file`:
+
+1. Is `--git` set, and is `git` on PATH, and is the project root inside a git
+   working tree? If any of these is false, skip straight to the normal
+   filesystem resolution (`file_mtime` behaves exactly as without `--git`).
+2. Is the file tracked by git (`git log --follow -- <file>` returns
+   something)? If not (new/untracked/staged-only file), fall back to stat for
+   that file only — every other git-resolved file is unaffected.
+3. File-level date: `git log -1 --follow --format=%aI -- <file>` → the most
+   recent commit's author-date. This is what lands in `file_mtime` when git
+   resolution succeeds — **as a drop-in replacement for the stat value**, same
+   field, same ISO 8601 UTC shape.
+4. Per node, line-level date: `git blame --porcelain -- <file>` (one
+   subprocess call per unique file, not per node) parsed into a `{line:
+   date}` map. If the node's `source_location` line resolves in that map,
+   its `git_commit_date` is the commit that last touched that exact line —
+   more precise than the file-level date, since a file with 500 lines can
+   have functions written years apart. Falls back to the file-level date if
+   the line lookup misses (e.g. `source_location` has no line marker, as with
+   doc/concept nodes).
+5. `git_author`: one extra `git log -1 --format=%an -- <file>` per unique
+   file — the author of the most recent commit touching the whole file (not
+   derived from blame, since "who last touched the file" and "who wrote this
+   specific line" are different questions).
+
+### Why `git_commit_date` is a new field, not a `file_mtime` override
+
+Only the **file-level** git date replaces `file_mtime` (same meaning: "when
+was this file last touched", just from a better source). The **line-level**,
+more precise date goes into a separate `git_commit_date` field instead of
+also overwriting `file_mtime`, so that:
+
+- `query.py`'s `--since`/`--before`, `--order`, and `temporal_stats()` keep
+  reading `file_mtime` with unchanged semantics regardless of whether the
+  graph was enriched with `--git` or not.
+- Nothing existing needs to change to keep working — `git_commit_date` is
+  purely additive, ignored by every consumer that doesn't know about it yet.
+
+### Shallow clones (`--depth 1`)
+
+A shallow clone truncates history — the oldest commit git can see is really
+just the shallow boundary, not the file's true first commit. `--git` detects
+this (`.git/shallow` present) and only refuses the "first commit / creation
+date" query in that case; the "most recent commit" date used by `enrich()`
+is unaffected, since the newest commit's author-date is real regardless of
+how much older history was fetched.
+
+### Untracked files, non-repos, missing git binary
+
+All three degrade the same way: silently fall back to filesystem timestamps
+for the affected file(s), print at most one notice for the whole run (never
+per-file), and never raise. `--git` on a plain non-git folder of documents/
+PDFs/images behaves identically to not passing `--git` at all.
+
+### Security
+
+Every `source_file` is validated to resolve inside the git repo root
+(`Path.relative_to()`) before it's ever used as a subprocess argument — this
+rejects a path that tries to escape the repo (e.g. containing `../`) by
+falling back to stat for that file, never passing untrusted input to `git`.
+All git invocations use argument lists (never `shell=True`) and a `--`
+separator before the path.
+
 ## Directory mtime (`dir_mtime`)
 
 Directories update their `st_mtime` whenever an entry is added or removed.
@@ -96,14 +179,18 @@ need.  Use `--dry-run` first to preview what will change.
 ```json
 {
   "file_mtime": "2026-06-11T19:45:25Z",
-  "dir_mtime": "2026-06-11T19:47:14Z"
+  "dir_mtime": "2026-06-11T19:47:14Z",
+  "git_commit_date": "2023-03-15T09:12:00Z",
+  "git_author": "Mario"
 }
 ```
 
 | Field | Type | When present |
 |-------|------|-------------|
-| `file_mtime` | `string \| null` | Always (mtime by default, ctime via `--use-ctime`, birthtime via `--use-birthtime`) |
+| `file_mtime` | `string \| null` | Always (mtime by default, ctime via `--use-ctime`, birthtime via `--use-birthtime`, git author-date via `--git` when resolvable) |
 | `dir_mtime` | `string \| null` | Only when `--include-dir-mtime` is set |
+| `git_commit_date` | `string` | Only when `--git` is set AND the node's file resolved via git (omitted, not `null`, otherwise) — line-accurate via `git blame` when possible, file-level otherwise |
+| `git_author` | `string` | Only when `--git` is set AND the file's author name resolved (omitted otherwise) |
 
 ### Edge format (within `links` array)
 

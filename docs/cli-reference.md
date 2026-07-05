@@ -16,7 +16,8 @@ graphify-temporal enrich [PATH] [OPTIONS]
 |------|------|-------------|
 | `PATH` | positional | Project root directory (default: `.`) |
 | `--use-ctime` | flag | Use `st_ctime` instead of `st_mtime` (Unix: metadata-change time) |
-| `--use-birthtime` | flag | Use `st_birthtime` instead of `st_mtime` (true creation time). Mutually exclusive with `--use-ctime` |
+| `--use-birthtime` | flag | Use `st_birthtime` instead of `st_mtime` (true creation time). Mutually exclusive with `--use-ctime`/`--git` |
+| `--git` | flag | Derive `file_mtime` from git author-dates (`git log --follow`/`git blame --porcelain`) instead of stat, for files tracked in a git repo. Falls back to stat automatically per file when git is missing, the path isn't a repo, or the file is untracked. Also stamps `git_commit_date` (line-accurate) and `git_author` on nodes. Mutually exclusive with `--use-ctime`/`--use-birthtime` |
 | `--include-dir-mtime` | flag | Also add `dir_mtime` (parent directory mtime) to nodes — arrival proxy |
 | `--cross-file` | flag | Create `preceded_by` edges across different files ordered by mtime |
 | `--dry-run` | flag | Compute stats and print them without modifying `graph.json` |
@@ -31,6 +32,12 @@ graphify-temporal enrich [PATH] [OPTIONS]
 ```bash
 # Basic: mtime + intra-file preceded_by edges
 graphify-temporal enrich
+
+# Git-derived dates instead of filesystem stat (cloned repos, CI checkouts)
+graphify-temporal enrich --git
+
+# Git dates + cross-file chronological edges
+graphify-temporal enrich --git --cross-file
 
 # True creation time instead of modification time
 graphify-temporal enrich --use-birthtime
@@ -73,8 +80,10 @@ identical `(source, target, relation)` triple already exists.
 |----------|-----------|---------|
 | `graph.json` not found | 1 | `No graph.json found at ... Run \`graphify .\` first.` |
 | Invalid JSON in graph.json | 1 | `Invalid JSON in ...` |
-| `--use-ctime` and `--use-birthtime` together | 1 | `--use-ctime and --use-birthtime are mutually exclusive` |
+| `--use-ctime`, `--use-birthtime`, `--git` — more than one together | 1 | `--git, --use-ctime and --use-birthtime are mutually exclusive. Choose one timestamp source.` |
 | Invalid `--since` date | 1 | `invalid --since date '...'. Expected YYYY-MM-DD.` |
+| `--git` but git not on PATH | 0 | Notice printed, falls back to stat — not an error |
+| `--git` but path isn't a git repo | 0 | Notice printed, falls back to stat — not an error |
 | Success (or `--dry-run`) | 0 | Stats printed |
 
 ---
@@ -268,6 +277,15 @@ agent's config, these prompts work directly:
 |--------|---------------------|
 | `how old is this project?` | `graphify-temporal stats` |
 | `are there files without timestamps?` | `graphify-temporal enrich --dry-run` (check `files_not_found`) |
+
+### Git-derived dates
+
+| Prompt | What the agent runs |
+|--------|---------------------|
+| `this is a cloned repo, the timestamps look wrong` | `graphify-temporal enrich --git` |
+| `who wrote this function and when?` | `graphify-temporal enrich --git && graphify-temporal query "<name>" --full` (check `git_author`/`git_commit_date`) |
+| `use real commit history instead of file timestamps` | `graphify-temporal enrich --git` |
+| `order changes by actual commit date, not checkout date` | `graphify-temporal enrich --git --cross-file` |
 
 ### Creation vs arrival
 

@@ -39,13 +39,14 @@ Zero runtime dependencies — stdlib only. Python >= 3.10.
 
 ```
 graphify_temporal/
-├── __init__.py   → __version__ string
-├── __main__.py   → CLI only: argparse + enrich() dispatch + stats printing
-├── enricher.py   → core: load graph.json, stamp nodes, build edges, save, regenerate
-└── fs.py         → pure helpers: resolve_mtime, matches_glob, is_excluded, parse_date
+├── __init__.py     → __version__ string
+├── __main__.py     → CLI only: argparse + enrich() dispatch + stats printing
+├── enricher.py     → core: load graph.json, stamp nodes, build edges, save, regenerate
+├── fs.py           → pure helpers: resolve_mtime, matches_glob, is_excluded, parse_date
+└── git_source.py   → pure helpers: git log/blame timestamp resolution (--git mode)
 tests/
 ├── __init__.py
-└── test_enricher.py   → TestFs (unit) + TestEnricher (integration), all via tmp_path
+└── test_enricher.py   → TestFs + TestGitSource (unit) + TestEnricher + TestEnrichGit (integration), all via tmp_path
 ```
 
 `__main__.py` has no business logic — it converts CLI args and prints. All enrichment
@@ -71,7 +72,22 @@ directly, never through the CLI.
   isn't on PATH, html/wiki regeneration silently fails (returns `False`).
 - **Tests are pure in-memory** — they use `_make_graph_json()` and `_write_file()`
   helpers to create a synthetic `graphify-out/graph.json` inside `tmp_path`. No real
-  filesystem graph is ever touched.
+  filesystem graph is ever touched. Git tests use `_make_git_repo()`/`_git_commit()`
+  and are skipped (not failed) when `git` isn't on PATH (`@requires_git` marker).
+- **`--git` never overwrites `file_mtime`** — it stays stat-sourced always, so
+  `query.py`'s `--since`/`--before`/`order`/`temporal_stats()` keep meaning exactly
+  what they mean today regardless of which flags produced a given `graph.json`.
+  Git-derived data lands in new additive fields (`git_commit_date`, `git_author`)
+  that existing consumers simply don't read.
+- **All `git_source.py` subprocess calls are argument-lists, never `shell=True`**,
+  and every `source_file` is passed through `_safe_relative()` in `enricher.py`
+  first — `Path.relative_to()` rejects anything outside the git root (e.g. a
+  `../` traversal attempt), falling back to stat instead of reaching subprocess.
+- **One `git log` + one `git blame --porcelain` per unique file, never per node**
+  — `blame_file()` parses the whole file's line-attribution in one subprocess
+  call into an in-memory `{line: date}` map; every node then does an O(1) dict
+  lookup via `resolve_line_date()`. Complexity is O(unique_files) subprocess
+  spawns, not O(nodes).
 
 ## graphify-temporal
 
@@ -110,6 +126,7 @@ uv venv && uv pip install -e ".[dev]"
 ### Usage
 ```bash
 graphify-temporal enrich                     # default: mtime + intra-file edges
+graphify-temporal enrich --git                # git commit/blame dates instead of stat mtime
 graphify-temporal enrich --use-birthtime     # true creation time (st_birthtime)
 graphify-temporal enrich --include-dir-mtime # directory arrival proxy
 graphify-temporal enrich --use-birthtime --include-dir-mtime  # full timeline
@@ -119,6 +136,20 @@ graphify-temporal enrich --since DATE        # filter by modification date
 graphify-temporal enrich --include GLOB      # filter files by glob (repeatable)
 graphify-temporal enrich --exclude GLOB      # exclude files by glob (repeatable)
 ```
+
+> **Why `--git` exists:** on a cloned repo (GitHub, CI checkout, etc.) `stat()`
+> mtime/birthtime reflect the moment of `git clone`/`checkout`, not the file's
+> real history — every file lands with nearly the same timestamp, making the
+> default enrichment nearly useless for tracing real changes. `--git` derives
+> dates from `git log`/`git blame` instead: one `git log` call per unique file
+> for the file-level date, one `git blame --porcelain` call per unique file
+> (parsed once into a `{line: date}` map) for line-level `git_commit_date` per
+> node. Falls back to stat automatically per-file when git is missing, the
+> file is untracked, or the path isn't inside a git repo — never a crash.
+> Mutually exclusive with `--use-ctime`/`--use-birthtime` (reject, don't
+> silently override). Adds `git_commit_date`/`git_author` as new node fields;
+> `file_mtime` itself is untouched so existing `query`/`timeline`/`stats`
+> consumers keep working unchanged.
 
 ### Install into AI assistant
 ```bash
@@ -150,8 +181,11 @@ does not understand relative time expressions.
 ```
 
 ### Key facts
-- Zero runtime dependencies — stdlib only, Python >= 3.10
+- Zero runtime dependencies — stdlib only, Python >= 3.10 (git itself is an
+  external binary invoked via subprocess, not a pip dependency)
 - Idempotent — safe to re-run with different flags (updates in-place)
 - Works on Linux, macOS, and Windows
 - `st_birthtime` supported on Linux (kernel >= 4.11), macOS, Windows
+- `--git` requires the `git` binary on PATH and a git working tree; absent
+  either, enrichment falls back to stat automatically (no crash, one notice)
 

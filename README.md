@@ -7,21 +7,40 @@
 
 Enrich a [graphify](https://github.com/safishamsi/graphify) knowledge graph with temporal metadata from filesystem timestamps.
 
-Adds `file_mtime`, `file_birthtime`, `dir_mtime` to nodes and deterministic `preceded_by` edges — making your knowledge graph time-aware without any LLM cost.
+Adds `file_mtime`, `file_birthtime`, `dir_mtime`, and (optionally) git-derived
+`git_commit_date`/`git_author` to nodes, plus deterministic `preceded_by` edges
+— making your knowledge graph time-aware without any LLM cost.
 
 ## What timestamps can you see?
 
-graphify-temporal can resolve three distinct timestamps from the filesystem:
+graphify-temporal can resolve timestamps from two sources: the filesystem
+(always available) and git history (opt-in, more accurate on cloned repos).
 
-| Attribute       | Flag                  | Meaning                                                                 |
-|-----------------|-----------------------|-------------------------------------------------------------------------|
-| `file_mtime`    | _(default)_           | Last content modification                                               |
-| `file_mtime`    | `--use-ctime`         | Inode metadata change (Unix) / creation (Windows)                       |
-| `file_mtime`    | `--use-birthtime`     | True creation time — when the file was born on disk                     |
-| `dir_mtime`     | `--include-dir-mtime` | Parent directory mtime — best proxy for "when did this file arrive here"|
+| Attribute        | Flag                  | Meaning                                                                 |
+|------------------|-----------------------|---------------------------------------------------------------------------|
+| `file_mtime`     | _(default)_           | Last content modification (filesystem)                                    |
+| `file_mtime`     | `--use-ctime`         | Inode metadata change (Unix) / creation (Windows)                         |
+| `file_mtime`     | `--use-birthtime`     | True creation time — when the file was born on disk                       |
+| `dir_mtime`      | `--include-dir-mtime` | Parent directory mtime — best proxy for "when did this file arrive here"  |
+| `git_commit_date`| `--git`               | Real author-date from `git log`/`git blame` — per node, line-accurate     |
+| `git_author`     | `--git`               | Author of the commit that last touched the node's file                    |
 
-The three timestamps (`mtime`, `birthtime`, `dir_mtime`) are often different, giving
-you a timeline: **created** → **arrived in this directory** → **last modified**.
+The three filesystem timestamps (`mtime`, `birthtime`, `dir_mtime`) are often
+different, giving you a timeline: **created** → **arrived in this directory**
+→ **last modified**.
+
+### Why `--git`?
+
+On a repo you cloned (from GitHub or anywhere else), filesystem timestamps
+are checkout artifacts, not history: every file gets ~the same `mtime`/
+`birthtime` at clone time, regardless of when it was actually written. `--git`
+sidesteps this by reading the timestamps out of the repo's own commit
+history instead of the filesystem — `git log` for a file-level date, `git
+blame` for a line-accurate date per graph node. It requires the `git` binary
+and a git working tree; falls back to filesystem timestamps automatically
+(per file) when either is missing, never a crash. See
+[docs/timestamps.md](docs/timestamps.md#git-derived-timestamps---git) for the
+full schema and fallback rules.
 
 Birth time (`st_birthtime`) is supported on:
 - **Linux** kernel ≥ 4.11 on ext4 / btrfs / xfs (via `statx` syscall)
@@ -56,6 +75,9 @@ graph is not complete without temporal stamps.
 # Basic: add file_mtime to all nodes + intra-file preceded_by edges
 graphify-temporal enrich
 
+# Derive dates from git history instead of filesystem stat (cloned repos)
+graphify-temporal enrich --git
+
 # Cross-file temporal edges + filter by date
 graphify-temporal enrich --cross-file --since 2026-05-01
 
@@ -84,7 +106,8 @@ graphify-temporal enrich --exclude "**/archive/**" --exclude "**/old/**"
 |------|-------------|
 | `PATH` | Project root (default `.`) |
 | `--use-ctime` | Use `st_ctime` instead of `st_mtime` (metadata-change on Unix, creation on Windows) |
-| `--use-birthtime` | Use `st_birthtime` instead of `st_mtime` (true creation time). Mutually exclusive with `--use-ctime` |
+| `--use-birthtime` | Use `st_birthtime` instead of `st_mtime` (true creation time). Mutually exclusive with `--use-ctime`/`--git` |
+| `--git` | Derive `file_mtime` from git author-dates (`git log`/`git blame`) instead of stat, for files tracked in a git repo. Falls back to stat automatically per file. Also adds `git_commit_date`/`git_author` node fields. Mutually exclusive with `--use-ctime`/`--use-birthtime` |
 | `--include-dir-mtime` | Also add `dir_mtime` (parent directory mtime) to nodes — arrival proxy |
 | `--cross-file` | Create `preceded_by` edges across different files |
 | `--dry-run` | Show stats without modifying `graph.json` |
@@ -97,9 +120,14 @@ graphify-temporal enrich --exclude "**/archive/**" --exclude "**/old/**"
 ## What it does
 
 1. Reads `graphify-out/graph.json` from your project
-2. For each node with a `source_file`, stats the filesystem:
-   - `file_mtime` (ISO 8601) — modification time (or ctime / birthtime depending on flag)
-   - `dir_mtime` (ISO 8601) — parent directory mtime, when `--include-dir-mtime` is set
+2. For each node with a `source_file`:
+   - Default: stats the filesystem for `file_mtime` (ISO 8601) — modification
+     time (or ctime / birthtime depending on flag), plus `dir_mtime` when
+     `--include-dir-mtime` is set
+   - With `--git`: resolves `file_mtime` from `git log` instead (falls back to
+     stat automatically if the file is untracked or not in a git repo), and
+     stamps `git_commit_date` (line-accurate via `git blame`, one subprocess
+     call per unique file) + `git_author` on each node
 3. Creates `preceded_by` edges within each file (ordered by line number)
 4. Optionally creates cross-file chronological edges
 5. Regenerates `graph.html` and `wiki/`

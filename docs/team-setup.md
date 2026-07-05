@@ -58,10 +58,13 @@ under the project root, the client is considered present.  For example:
 The `## graphify-temporal` block contains:
 
 - **Setup** — `pip install git+...`, `git clone ... && pip install .`, and `uv venv && uv pip install -e ".[dev]"`
-- **All `enrich`, `query`, `timeline`, `stats` commands** with examples and agent guidance
+- **All `enrich`, `query`, `timeline`, `stats` commands** with examples and agent guidance,
+  including `--git` for repos where filesystem timestamps are checkout artifacts
+  (cloned repos, CI checkouts) rather than real history
 - **`install` / `uninstall`** commands
 - **Test command** — `.venv/bin/pytest tests/ -v`
-- **Key facts** — zero deps, idempotent, cross-platform, st_birthtime support
+- **Key facts** — zero pip deps, idempotent, cross-platform, st_birthtime support,
+  `--git` requires the `git` binary but falls back to stat automatically if absent
 
 The block is delimited by `## graphify-temporal` and the next `## ` heading.
 On re-install the block is replaced in-place — never duplicated.
@@ -107,3 +110,18 @@ reaches for raw file reads.  The reminder fires once per session.
    enrichment.
 3. After modifying code, each developer runs `graphify-temporal enrich` to
    keep timestamps current (idempotent, no harm in re-running).
+
+Since every teammate's checkout is itself a git clone, `--use-birthtime`/
+default `mtime` will show ~the same value for every file that hasn't been
+touched locally since the clone — not useful for tracing who-wrote-what.
+For a team repo, prefer:
+
+```bash
+graphify-temporal enrich --git
+```
+
+This reads dates from the shared commit history instead, so `file_mtime`
+and `git_commit_date`/`git_author` reflect the team's actual authorship
+timeline regardless of when each person cloned the repo. See
+[timestamps.md](timestamps.md#git-derived-timestamps---git) for the
+resolution order and fallback rules.
