@@ -17,8 +17,11 @@ env/
 .coverage
 htmlcov/
 
-# graphify output (user generates this locally)
+# graphify output
 graphify-out/
+
+# Benchmark data 
+benchmark/
 
 # IDE
 .idea/

@@ -135,7 +135,7 @@ def blame_file(repo_root: Path, relpath: str) -> dict[int, str] | None:
             ["git", "-C", str(repo_root), "blame", "--porcelain", "--", relpath],
             capture_output=True, text=True, timeout=60,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired, UnicodeDecodeError):
         return None
     if result.returncode != 0:
         return None
