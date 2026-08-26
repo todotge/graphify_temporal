@@ -246,3 +246,15 @@ class TestInstall:
         )
         assert result.returncode == 0
         assert "--platform" in result.stdout
+
+    def test_instruction_block_mentions_git_flag(self):
+        """Regression guard: a previous drift left --git undocumented in the
+        installer's template while it was already documented in the real
+        AGENTS.md — a fresh install would have silently overwritten it."""
+        assert "--git" in _INSTRUCTION_BLOCK
+
+    def test_instruction_block_mentions_impact(self):
+        """The impact subcommand must be documented so agents know to reach
+        for it proactively during debugging (no runtime hook exists for
+        most clients — this prose is the only lever)."""
+        assert "graphify-temporal impact" in _INSTRUCTION_BLOCK

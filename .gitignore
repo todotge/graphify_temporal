@@ -17,8 +17,11 @@ env/
 .coverage
 htmlcov/
 
-# graphify output (user generates this locally)
+# graphify output
 graphify-out/
+
+# Benchmark data 
+benchmark/
 
 # IDE
 .idea/
@@ -26,7 +29,9 @@ graphify-out/
 *.swp
 *.swo
 
-# OpenCode dev environment (not needed by users)
+# OpenCode
 .opencode/
+*.md
+!README.md
+!AGENTS.md
 
-ISSUE_ROADMAP.md

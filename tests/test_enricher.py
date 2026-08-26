@@ -3,6 +3,8 @@
 import calendar
 import json
 import os
+import shutil
+import subprocess
 import time
 import tempfile
 from pathlib import Path
@@ -14,6 +16,7 @@ from graphify_temporal.fs import (
     resolve_mtime, resolve_birthtime, resolve_dir_mtime,
     matches_glob, is_excluded, parse_date,
 )
+from graphify_temporal import git_source
 
 
 # ---------------------------------------------------------------------------
@@ -45,6 +48,30 @@ def _write_file(root: Path, relpath: str, content: str = "x") -> None:
     fp = root / relpath
     fp.parent.mkdir(parents=True, exist_ok=True)
     fp.write_text(content, encoding="utf-8")
+
+
+def _make_git_repo(root: Path) -> None:
+    """Init a git repo at root with a fixed test identity."""
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+
+
+def _git_commit(root: Path, message: str = "commit", when: str | None = None) -> None:
+    """Stage everything and commit, optionally pinning author/committer date
+    (YYYY-MM-DDTHH:MM:SSZ) so ordering in tests is deterministic instead of
+    depending on real wall-clock timing between two commits."""
+    env = dict(os.environ)
+    if when:
+        env["GIT_AUTHOR_DATE"] = when
+        env["GIT_COMMITTER_DATE"] = when
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", message], cwd=root, check=True, env=env)
+
+
+requires_git = pytest.mark.skipif(
+    shutil.which("git") is None, reason="git not installed"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -514,3 +541,210 @@ class TestEnricher:
         ign_node = next(n for n in data["nodes"] if n["id"] == "ignored")
         assert main_node["file_mtime"] is not None
         assert ign_node["file_mtime"] is None
+
+
+# ---------------------------------------------------------------------------
+# TestGitSource — unit tests for graphify_temporal.git_source
+# ---------------------------------------------------------------------------
+
+
+@requires_git
+class TestGitSource:
+    """Unit tests for git_source — no graph.json needed, just a temp repo."""
+
+    def test_git_available_true_when_installed(self):
+        assert git_source.git_available() is True
+
+    def test_find_repo_root_in_git_repo(self, tmp_path):
+        _make_git_repo(tmp_path)
+        assert git_source.find_repo_root(tmp_path) == tmp_path.resolve()
+
+    def test_find_repo_root_not_a_repo(self, tmp_path):
+        assert git_source.find_repo_root(tmp_path) is None
+
+    def test_find_repo_root_monorepo_subdir(self, tmp_path):
+        """A subdirectory of the repo still resolves to the real root —
+        the case that matters for enrich() being called with root pointing
+        at a subfolder of a larger monorepo."""
+        _make_git_repo(tmp_path)
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        assert git_source.find_repo_root(sub) == tmp_path.resolve()
+
+    def test_resolve_file_date_last_touch(self, tmp_path):
+        """Two commits touching the same file → 'last' mode returns the
+        second commit's date, not the first."""
+        _make_git_repo(tmp_path)
+        _write_file(tmp_path, "a.py", "v1")
+        _git_commit(tmp_path, "first", when="2023-01-01T00:00:00Z")
+        _write_file(tmp_path, "a.py", "v2")
+        _git_commit(tmp_path, "second", when="2024-06-15T00:00:00Z")
+
+        date = git_source.resolve_file_date(tmp_path, "a.py", mode="last")
+        assert date == "2024-06-15T00:00:00Z"
+
+    def test_resolve_file_date_first_creation(self, tmp_path):
+        _make_git_repo(tmp_path)
+        _write_file(tmp_path, "a.py", "v1")
+        _git_commit(tmp_path, "first", when="2023-01-01T00:00:00Z")
+        _write_file(tmp_path, "a.py", "v2")
+        _git_commit(tmp_path, "second", when="2024-06-15T00:00:00Z")
+
+        date = git_source.resolve_file_date(tmp_path, "a.py", mode="first")
+        assert date == "2023-01-01T00:00:00Z"
+
+    def test_resolve_file_date_untracked_file(self, tmp_path):
+        _make_git_repo(tmp_path)
+        _write_file(tmp_path, "untracked.py")
+        assert git_source.resolve_file_date(tmp_path, "untracked.py") is None
+
+    def test_is_shallow_repo_false_normal_clone(self, tmp_path):
+        _make_git_repo(tmp_path)
+        assert git_source.is_shallow_repo(tmp_path) is False
+
+    def test_is_shallow_repo_true(self, tmp_path):
+        _make_git_repo(tmp_path)
+        (tmp_path / ".git" / "shallow").touch()
+        assert git_source.is_shallow_repo(tmp_path) is True
+
+    def test_blame_file_line_dates(self, tmp_path):
+        """Line-level attribution: only the modified line shows the newer
+        commit's date, untouched lines keep the original commit's date."""
+        _make_git_repo(tmp_path)
+        _write_file(tmp_path, "a.py", "line1\nline2\nline3\n")
+        _git_commit(tmp_path, "first", when="2023-01-01T00:00:00Z")
+        _write_file(tmp_path, "a.py", "line1\nCHANGED\nline3\n")
+        _git_commit(tmp_path, "second", when="2024-06-15T00:00:00Z")
+
+        blame = git_source.blame_file(tmp_path, "a.py")
+        assert blame is not None
+        assert blame[1] == "2023-01-01T00:00:00Z"
+        assert blame[2] == "2024-06-15T00:00:00Z"
+        assert blame[3] == "2023-01-01T00:00:00Z"
+
+    def test_blame_file_untracked(self, tmp_path):
+        _make_git_repo(tmp_path)
+        _write_file(tmp_path, "untracked.py")
+        assert git_source.blame_file(tmp_path, "untracked.py") is None
+
+    def test_resolve_line_date_lookup(self):
+        blame_map = {1: "2023-01-01T00:00:00Z", 2: "2024-06-15T00:00:00Z"}
+        assert git_source.resolve_line_date(blame_map, 1) == "2023-01-01T00:00:00Z"
+        assert git_source.resolve_line_date(blame_map, 2) == "2024-06-15T00:00:00Z"
+        assert git_source.resolve_line_date(blame_map, 99) is None
+        assert git_source.resolve_line_date(blame_map, 0) is None
+        assert git_source.resolve_line_date(None, 1) is None
+
+
+# ---------------------------------------------------------------------------
+# TestEnrichGit — integration tests for enrich(use_git=True)
+# ---------------------------------------------------------------------------
+
+
+@requires_git
+class TestEnrichGit:
+    """Integration tests for the --git enrichment path."""
+
+    def test_enrich_use_git_basic(self, tmp_path):
+        """git_commit_date reflects the real commit date, not the stat
+        mtime — proven by bumping the file's mtime to "now" after commit
+        (simulating a fresh clone) and asserting git_commit_date still
+        shows the original 2023 commit date, not the bumped mtime."""
+        _make_git_repo(tmp_path)
+        _write_file(tmp_path, "a.py", "def foo():\n    pass\n")
+        _git_commit(tmp_path, "first", when="2023-01-01T00:00:00Z")
+        os.utime(tmp_path / "a.py", None)  # bump mtime to "now"
+
+        graph_dir = tmp_path / "graphify-out"
+        graph_dir.mkdir()
+        n1 = {"id": "foo", "label": "foo", "source_file": "a.py", "source_location": "a.py:L1"}
+        _make_graph_json(graph_dir, [n1])
+
+        enrich(tmp_path, use_git=True, quiet=True)
+        data = json.loads(graph_dir.joinpath("graph.json").read_text(encoding="utf-8"))
+        node = data["nodes"][0]
+        assert node["git_commit_date"] == "2023-01-01T00:00:00Z"
+        assert node["file_mtime"] == "2023-01-01T00:00:00Z"
+        assert node["git_author"] == "Test"
+
+    def test_enrich_use_git_falls_back_when_not_a_repo(self, tmp_path):
+        """No git repo at all → behaves exactly like use_git=False: no
+        crash, file_mtime from stat, no git_commit_date field."""
+        graph_dir = tmp_path / "graphify-out"
+        graph_dir.mkdir()
+        _write_file(tmp_path, "a.py")
+        n1 = {"id": "foo", "label": "foo", "source_file": "a.py", "source_location": "a.py:L1"}
+        _make_graph_json(graph_dir, [n1])
+
+        stats = enrich(tmp_path, use_git=True, quiet=True)
+        data = json.loads(graph_dir.joinpath("graph.json").read_text(encoding="utf-8"))
+        node = data["nodes"][0]
+        assert node["file_mtime"] is not None
+        assert "git_commit_date" not in node
+        assert stats["nodes_enriched"] == 1
+
+    def test_enrich_use_git_untracked_file_falls_back_to_stat(self, tmp_path):
+        """Repo exists, but one file is uncommitted — that file gets stat
+        mtime and no git_commit_date, while its committed sibling gets both."""
+        _make_git_repo(tmp_path)
+        _write_file(tmp_path, "tracked.py")
+        _git_commit(tmp_path, "first", when="2023-01-01T00:00:00Z")
+        _write_file(tmp_path, "untracked.py")
+
+        graph_dir = tmp_path / "graphify-out"
+        graph_dir.mkdir()
+        n1 = {"id": "a", "label": "a", "source_file": "tracked.py", "source_location": "tracked.py:L1"}
+        n2 = {"id": "b", "label": "b", "source_file": "untracked.py", "source_location": "untracked.py:L1"}
+        _make_graph_json(graph_dir, [n1, n2])
+
+        enrich(tmp_path, use_git=True, quiet=True)
+        data = json.loads(graph_dir.joinpath("graph.json").read_text(encoding="utf-8"))
+        tracked = next(n for n in data["nodes"] if n["id"] == "a")
+        untracked = next(n for n in data["nodes"] if n["id"] == "b")
+        assert tracked["git_commit_date"] == "2023-01-01T00:00:00Z"
+        assert untracked["file_mtime"] is not None
+        assert "git_commit_date" not in untracked
+
+    def test_enrich_use_git_cross_file_uses_git_dates(self, tmp_path):
+        """--cross-file ordering follows git commit dates, not stat mtimes —
+        both files' mtimes are bumped to "now" after commit (simulating a
+        clone where every file gets ~the same checkout timestamp), yet the
+        preceded_by edge still points from the file committed first."""
+        _make_git_repo(tmp_path)
+        _write_file(tmp_path, "old.py", "x")
+        _git_commit(tmp_path, "old commit", when="2023-01-01T00:00:00Z")
+        _write_file(tmp_path, "new.py", "y")
+        _git_commit(tmp_path, "new commit", when="2024-06-15T00:00:00Z")
+        # Simulate post-clone checkout: both files now share ~the same mtime.
+        os.utime(tmp_path / "old.py", None)
+        os.utime(tmp_path / "new.py", None)
+
+        graph_dir = tmp_path / "graphify-out"
+        graph_dir.mkdir()
+        n1 = {"id": "old_node", "label": "old", "source_file": "old.py", "source_location": "old.py:L1"}
+        n2 = {"id": "new_node", "label": "new", "source_file": "new.py", "source_location": "new.py:L1"}
+        _make_graph_json(graph_dir, [n1, n2])
+
+        enrich(tmp_path, use_git=True, cross_file=True, quiet=True)
+        data = json.loads(graph_dir.joinpath("graph.json").read_text(encoding="utf-8"))
+        cross_edges = [e for e in data["links"] if e["source_file"] == "old.py"]
+        assert len(cross_edges) == 1
+        assert cross_edges[0]["source"] == "old_node"
+        assert cross_edges[0]["target"] == "new_node"
+
+    def test_enrich_use_git_no_binary(self, tmp_path, monkeypatch):
+        """git binary missing → graceful fallback, no exception."""
+        monkeypatch.setattr(git_source, "which", lambda name: None)
+        git_source.git_available.cache_clear()
+
+        graph_dir = tmp_path / "graphify-out"
+        graph_dir.mkdir()
+        _write_file(tmp_path, "a.py")
+        n1 = {"id": "foo", "label": "foo", "source_file": "a.py", "source_location": "a.py:L1"}
+        _make_graph_json(graph_dir, [n1])
+
+        stats = enrich(tmp_path, use_git=True, quiet=True)
+        data = json.loads(graph_dir.joinpath("graph.json").read_text(encoding="utf-8"))
+        assert data["nodes"][0]["file_mtime"] is not None
+        assert stats["nodes_enriched"] == 1
+        git_source.git_available.cache_clear()
