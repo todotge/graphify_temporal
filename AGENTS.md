@@ -156,6 +156,15 @@ graphify-temporal install --platform claude   # force a specific client
 graphify-temporal uninstall                  # remove instructions
 ```
 
+`install` writes three things, per client support:
+1. A graphify-temporal instruction block (AGENTS.md, CLAUDE.md, GEMINI.md, ...)
+2. A discoverable **skill** for OpenCode (`.opencode/skills/graphify-temporal/SKILL.md`)
+   and Claude Code (`.claude/skills/graphify-temporal/SKILL.md`) — same format both,
+   one template. Version-tracked via `.graphify-temporal_version` marker; re-running
+   `install` after an upgrade refreshes the skill automatically.
+3. An OpenCode plugin (`.opencode/plugins/graphify-temporal.js`) that reminds the
+   agent to run enrichment when `graph.json` lacks temporal stamps.
+
 ### Querying
 ```bash
 graphify-temporal query "auth"              # search nodes (one per file)

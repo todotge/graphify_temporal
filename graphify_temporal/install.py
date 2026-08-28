@@ -4,7 +4,10 @@ Scans a project root for known client markers (CLAUDE.md, .opencode/,
 GEMINI.md, .cursor/, etc.), then writes a ``## graphify-temporal`` block
 into the appropriate instruction file.  For OpenCode it also registers a
 ``tool.execute.before`` plugin that reminds the agent to run enrichment
-when graph.json exists but lacks temporal stamps.
+when graph.json exists but lacks temporal stamps.  For OpenCode and Claude
+Code it installs a discoverable skill (``SKILL.md`` + version marker) so
+the agent can trigger on temporal questions without reading the full
+instruction block.
 """
 
 from __future__ import annotations
@@ -13,6 +16,8 @@ import json
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from . import __version__
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -43,6 +48,20 @@ _DEFINITIONS: dict[str, tuple[str | None, list[str]]] = {
 # Instruction block delimiters — everything between (inclusive) is managed.
 _BLOCK_START = "## graphify-temporal\n"
 _BLOCK_END   = ("# ", "## ")  # headings of any level
+
+# Skill install locations (relative to project root) for clients that
+# support agent skills.  Both use the same SKILL.md format (frontmatter
+# name/description + markdown body), so one template serves every path.
+_SKILL_PATHS: dict[str, str] = {
+    "claude":   ".claude/skills/graphify-temporal",
+    "opencode": ".opencode/skills/graphify-temporal",
+}
+
+# Version marker written next to SKILL.md — same pattern graphify uses
+# (`.graphify_version`).  A mismatch between the marker and __version__
+# triggers a rewrite, so `graphify-temporal install` after an upgrade
+# refreshes the skill content automatically.
+_SKILL_VERSION_MARKER = ".graphify-temporal_version"
 
 # ---- template ----
 _INSTRUCTION_BLOCK = """\
@@ -113,6 +132,15 @@ graphify-temporal install --platform claude   # force a specific client
 graphify-temporal uninstall                  # remove instructions
 ```
 
+`install` writes three things, per client support:
+1. A graphify-temporal instruction block (AGENTS.md, CLAUDE.md, GEMINI.md, ...)
+2. A discoverable **skill** for OpenCode (`.opencode/skills/graphify-temporal/SKILL.md`)
+   and Claude Code (`.claude/skills/graphify-temporal/SKILL.md`) — same format both,
+   one template. Version-tracked via `.graphify-temporal_version` marker; re-running
+   `install` after an upgrade refreshes the skill automatically.
+3. An OpenCode plugin (`.opencode/plugins/graphify-temporal.js`) that reminds the
+   agent to run enrichment when `graph.json` lacks temporal stamps.
+
 ### Querying
 ```bash
 graphify-temporal query "auth"              # search nodes (one per file)
@@ -174,6 +202,115 @@ if graphify hasn't run a full semantic pass recently — consider suggesting
   either, enrichment falls back to stat automatically (no crash, one notice)
 - `impact` is read-only — never writes to graph.json, safe to re-run anytime
   during a debugging session
+"""
+
+# ---- skill template ----
+# Installed for OpenCode (`.opencode/skills/`) and Claude Code
+# (`.claude/skills/`) — same format both clients.  The description is the
+# trigger surface: it must name the situations where the agent should
+# reach for this skill instead of grepping raw files.
+_SKILL_TEMPLATE = """\
+---
+name: graphify-temporal
+description: "Temporal layer for graphify knowledge graphs. Use after every /graphify build or update (graph needs enrichment), for time-based questions ('what changed this week', 'when was X added'), order-of-work questions (timeline of what came first), temporal coverage stats, and root-cause tracing ('X broke Y', 'what did I touch', 'this used to work'). Commands: enrich (stamp file_mtime/git dates + preceded_by edges), query (time-filtered node search), timeline (preceded_by chain walk), stats (temporal coverage), impact (structural+temporal root-cause tracing)."
+---
+
+# graphify-temporal
+
+Temporal enrichment + time-aware queries for graphify knowledge graphs.
+Zero runtime deps, stdlib only. Reads/writes `graphify-out/graph.json`.
+
+## Always: enrich after every graphify build
+
+After `/graphify` (build or update) completes, run in the project root:
+
+```bash
+graphify-temporal enrich
+```
+
+Idempotent — safe to re-run with different flags, updates in place.
+Not on PATH? Use `.venv/bin/graphify-temporal` or `python -m graphify_temporal`.
+
+## Flag heuristics
+
+| Situation | Command |
+|---|---|
+| Cloned repo (GitHub/CI): stat mtime = checkout time | `graphify-temporal enrich --git` |
+| Local filesystem, want true creation time | `graphify-temporal enrich --use-birthtime` |
+| Want arrival-in-directory proxy too | add `--include-dir-mtime` |
+| Want chronological edges across files | `graphify-temporal enrich --cross-file` |
+| Preview without writing | `graphify-temporal enrich --dry-run` |
+| Only files modified since a date | `graphify-temporal enrich --since YYYY-MM-DD` |
+| Restrict to globs | `--include GLOB` / `--exclude GLOB` (repeatable) |
+
+- `--git` reads author-dates via one `git log` + one `git blame --porcelain`
+  per unique file; falls back to stat per file automatically. Mutually
+  exclusive with `--use-ctime`/`--use-birthtime`. Adds `git_commit_date`/
+  `git_author` node fields; never overwrites stat-sourced `file_mtime`
+  semantics — `query`/`timeline`/`stats` keep working unchanged either way.
+
+## Time-based questions → query
+
+All time filters take explicit YYYY-MM-DD. Relative phrases ("last week")
+→ compute dates first with `date -I` or `datetime`, then pass them.
+
+```bash
+graphify-temporal query "auth" --since 2026-08-01 --order newest-first
+graphify-temporal query "auth" --before 2026-08-01 --full
+```
+
+- Defaults to one entry per file; `--full` shows every node.
+- `--order` choices: `newest-first`, `oldest-first`, `none`.
+
+## Order-of-work questions → timeline
+
+```bash
+graphify-temporal timeline              # from oldest chain-start
+graphify-temporal timeline "node_id"    # from a specific node
+```
+
+Walks `preceded_by` chains, prints ordered steps with timestamps.
+
+## Coverage questions → stats
+
+```bash
+graphify-temporal stats            # human-readable
+graphify-temporal stats --json     # machine-readable
+```
+
+## "X broke Y" / "what did I touch" → impact (use BEFORE grepping)
+
+```bash
+graphify-temporal impact NODE_A NODE_B            # how are these connected?
+graphify-temporal impact NODE_A                   # what's reachable around it?
+graphify-temporal impact NODE_A NODE_B --hops 5   # widen search
+graphify-temporal impact NODE_A NODE_B --relations calls,references  # structural only
+graphify-temporal impact NODE_A NODE_B --json     # machine-readable
+```
+
+- Node ids come from `graphify-temporal query "<search term>"` or
+  `graphify query` — run one of those first if you don't know the exact id.
+- Walks structural edges (calls/imports/references/...) + temporal history
+  together; ranks candidate root causes.
+- Read-only — never writes graph.json; safe to re-run mid-debug.
+- `"structural_confidence": "temporal-only"` in output (or a
+  `[temporal-only]` warning) means the graph has only `preceded_by`
+  timestamp edges, no semantic edges. Treat results as weak evidence
+  (temporal proximity, not a confirmed code relationship) and say so.
+  Suggest `/graphify --update deep` if results look thin.
+
+## Install into AI assistants
+
+```bash
+graphify-temporal install       # auto-detect clients (writes this skill for opencode/claude)
+graphify-temporal uninstall
+```
+
+## Rules
+
+- `impact` is read-only. `enrich` is idempotent. Both safe to re-run.
+- Graph edge array is keyed `links`, not `edges` (NetworkX node-link format).
+- `graphify-out/` itself is never enriched.
 """
 
 # OpenCode plugin — JavaScript
@@ -245,6 +382,8 @@ def install(
         instr_file, _markers = _DEFINITIONS.get(cid, (None, []))
         if instr_file:
             ok = _inject_block(root / instr_file) and ok
+        if cid in _SKILL_PATHS:
+            ok = _install_skill(root, cid) and ok
         if cid == "opencode":
             ok = _install_opencode_plugin(root) and ok
             ok = _register_opencode_json(root) and ok
@@ -270,6 +409,8 @@ def uninstall(
         instr_file, _markers = _DEFINITIONS.get(cid, (None, []))
         if instr_file:
             ok = _remove_block(root / instr_file) and ok
+        if cid in _SKILL_PATHS:
+            ok = _uninstall_skill(root, cid) and ok
         if cid == "opencode":
             ok = _uninstall_opencode_plugin(root) and ok
             ok = _unregister_opencode_json(root) and ok
@@ -376,6 +517,62 @@ def _append_block(text: str) -> str:
     if stripped:
         return stripped + "\n\n" + _INSTRUCTION_BLOCK + "\n"
     return _INSTRUCTION_BLOCK + "\n"
+
+
+# ---------------------------------------------------------------------------
+# skill installation (OpenCode + Claude Code)
+# ---------------------------------------------------------------------------
+
+
+def _install_skill(root: Path, client: str) -> bool:
+    """Write SKILL.md + version marker for *client* if it supports skills.
+
+    Returns True when the client has no skill support (nothing to do) or
+    the skill is already current; False only on a real I/O error.
+    """
+    rel = _SKILL_PATHS.get(client)
+    if rel is None:
+        return True  # client has no skill support — nothing to do
+
+    skill_dir = root / rel
+    marker = skill_dir / _SKILL_VERSION_MARKER
+    try:
+        if (
+            marker.exists()
+            and marker.read_text(encoding="utf-8").strip() == __version__
+        ):
+            return True  # already up to date
+
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(_SKILL_TEMPLATE, encoding="utf-8")
+        marker.write_text(__version__ + "\n", encoding="utf-8")
+        return True
+    except OSError:
+        return False
+
+
+def _uninstall_skill(root: Path, client: str) -> bool:
+    """Remove the skill files we manage for *client*; leave user files alone."""
+    rel = _SKILL_PATHS.get(client)
+    if rel is None:
+        return True  # client has no skill support — nothing to do
+
+    skill_dir = root / rel
+    try:
+        if not skill_dir.exists():
+            return True
+        for name in ("SKILL.md", _SKILL_VERSION_MARKER):
+            fp = skill_dir / name
+            if fp.exists():
+                fp.unlink()
+        # Remove the directory only if nothing else lives in it.
+        try:
+            skill_dir.rmdir()
+        except OSError:
+            pass
+        return True
+    except OSError:
+        return False
 
 
 # ---------------------------------------------------------------------------
