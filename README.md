@@ -56,12 +56,12 @@ When birthtime is unavailable the fallback is `file_mtime = None` — never a cr
 ## Install
 
 ```bash
-pip install git+https://github.com/todotge/graphify-temporal.git
+pip install git+https://github.com/todotge/graphify_temporal.git
 ```
 
 Or clone and install locally:
 ```bash
-git clone https://github.com/todotge/graphify-temporal.git
+git clone https://github.com/todotge/graphify_temporal.git
 cd graphify-temporal
 pip install .
 ```
