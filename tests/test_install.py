@@ -14,6 +14,9 @@ from graphify_temporal.install import (
     _inject_block,
     _remove_block,
     _INSTRUCTION_BLOCK,
+    _SKILL_TEMPLATE,
+    _SKILL_PATHS,
+    _SKILL_VERSION_MARKER,
 )
 
 
@@ -258,3 +261,92 @@ class TestInstall:
         for it proactively during debugging (no runtime hook exists for
         most clients — this prose is the only lever)."""
         assert "graphify-temporal impact" in _INSTRUCTION_BLOCK
+
+
+# ---------------------------------------------------------------------------
+# skill installation (OpenCode + Claude Code)
+# ---------------------------------------------------------------------------
+
+
+class TestSkillInstall:
+    def _skill_dir(self, root: Path, client: str) -> Path:
+        return root / _SKILL_PATHS[client]
+
+    @pytest.mark.parametrize("client", ["opencode", "claude"])
+    def test_skill_installed(self, tmp_path, client):
+        """Install writes SKILL.md + version marker into the client dir."""
+        results = install(tmp_path, clients=[client])
+        assert results == {client: True}
+        skill_dir = self._skill_dir(tmp_path, client)
+        skill_file = skill_dir / "SKILL.md"
+        assert skill_file.exists()
+        assert skill_file.read_text() == _SKILL_TEMPLATE
+        assert (skill_dir / _SKILL_VERSION_MARKER).exists()
+
+    def test_skill_install_idempotent(self, tmp_path):
+        """Second install with same version leaves the skill untouched."""
+        (tmp_path / ".opencode").mkdir()
+        install(tmp_path, clients=["opencode"])
+        skill_file = self._skill_dir(tmp_path, "opencode") / "SKILL.md"
+        before = skill_file.read_text()
+        install(tmp_path, clients=["opencode"])
+        assert skill_file.read_text() == before
+
+    def test_skill_reinstalled_on_version_change(self, tmp_path):
+        """A version marker mismatch rewrites stale skill content."""
+        (tmp_path / ".opencode").mkdir()
+        install(tmp_path, clients=["opencode"])
+        skill_dir = self._skill_dir(tmp_path, "opencode")
+        (skill_dir / _SKILL_VERSION_MARKER).write_text("0.0.0\n")
+        (skill_dir / "SKILL.md").write_text("stale skill content\n")
+        install(tmp_path, clients=["opencode"])
+        text = (skill_dir / "SKILL.md").read_text()
+        assert text == _SKILL_TEMPLATE
+        assert "stale skill content" not in text
+
+    @pytest.mark.parametrize("client", ["opencode", "claude"])
+    def test_uninstall_removes_skill(self, tmp_path, client):
+        """Uninstall deletes the skill dir for the client."""
+        install(tmp_path, clients=[client])
+        uninstall(tmp_path, clients=[client])
+        assert not self._skill_dir(tmp_path, client).exists()
+
+    def test_uninstall_skill_noop_when_absent(self, tmp_path):
+        """Uninstall succeeds when the skill was never installed."""
+        (tmp_path / ".opencode").mkdir()
+        results = uninstall(tmp_path, clients=["opencode"])
+        assert results == {"opencode": True}
+
+    def test_uninstall_preserves_user_files_in_skill_dir(self, tmp_path):
+        """Skill dir with foreign files is not deleted on uninstall."""
+        (tmp_path / ".opencode").mkdir()
+        install(tmp_path, clients=["opencode"])
+        skill_dir = self._skill_dir(tmp_path, "opencode")
+        (skill_dir / "user-notes.md").write_text("# mine\n")
+        uninstall(tmp_path, clients=["opencode"])
+        assert skill_dir.exists()
+        assert (skill_dir / "user-notes.md").exists()
+        assert not (skill_dir / "SKILL.md").exists()
+        assert not (skill_dir / _SKILL_VERSION_MARKER).exists()
+
+    def test_clients_without_skill_support_untouched(self, tmp_path):
+        """Gemini gets the instruction block but no skill directory."""
+        (tmp_path / "GEMINI.md").write_text("# g\n")
+        results = install(tmp_path, clients=["gemini"])
+        assert results == {"gemini": True}
+        assert not (tmp_path / ".claude" / "skills").exists()
+        assert not (tmp_path / ".opencode" / "skills").exists()
+        assert "## graphify-temporal" in (tmp_path / "GEMINI.md").read_text()
+
+    def test_skill_template_covers_all_subcommands(self):
+        """Regression guard: every subcommand must be documented in the skill
+        — the skill description is the only trigger surface agents see."""
+        for cmd in ("enrich", "query", "timeline", "stats", "impact", "install"):
+            assert f"graphify-temporal {cmd}" in _SKILL_TEMPLATE
+
+    def test_skill_template_has_frontmatter(self):
+        """The skill must have name + description frontmatter to be
+        discoverable by both OpenCode and Claude Code."""
+        assert _SKILL_TEMPLATE.startswith("---\n")
+        assert "name: graphify-temporal" in _SKILL_TEMPLATE
+        assert "description:" in _SKILL_TEMPLATE

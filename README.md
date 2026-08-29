@@ -1,6 +1,6 @@
 # graphify-temporal
 
-![version](https://img.shields.io/badge/version-1.0.0-blue)
+![version](https://img.shields.io/badge/version-1.0.1-blue)
 ![python](https://img.shields.io/badge/python-%3E%3D3.10-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
 [![Ko-fi](https://img.shields.io/badge/support-Ko--fi-ff5e5b)](https://ko-fi.com/gianlucagernone)
@@ -139,7 +139,7 @@ graphify-temporal enrich --exclude "**/archive/**" --exclude "**/old/**"
 ### Example output
 
 ```
-graphify-temporal v1.0.0
+graphify-temporal v1.0.1
   Files analyzed:     1,220
   Nodes enriched:    14,173 (85%)
   Files not found:       12
@@ -264,7 +264,7 @@ graphify-temporal query "AuthModule"          # find the node id
 graphify-temporal impact auth_module database_pool --hops 3
 ```
 ```
-graphify-temporal v1.0.0  — impact trace: auth_module <-> database_pool
+graphify-temporal v1.0.1  — impact trace: auth_module <-> database_pool
 
   Direct path: auth_module -> connection_manager -> database_pool  (2 hops, relation: calls, references)
 
@@ -277,7 +277,11 @@ graphify-temporal v1.0.0  — impact trace: auth_module <-> database_pool
 ## Team setup
 
 graphify-temporal auto-detects which AI coding assistant you're using and injects
-instructions so the agent knows how to run temporal enrichment.
+instructions so the agent knows how to run temporal enrichment. For clients
+that support agent skills (OpenCode, Claude Code) it also installs a
+discoverable **skill** — `SKILL.md` with a trigger-rich description — so the
+agent reaches for `impact`/`query`/`timeline` on temporal questions without
+reading the full instruction block.
 
 ```bash
 # Auto-detect all clients and install instructions
@@ -291,21 +295,25 @@ graphify-temporal install --platform claude
 graphify-temporal uninstall
 ```
 
+The skill is version-tracked via a `.graphify-temporal_version` marker (same
+pattern graphify uses); re-running `install` after an upgrade refreshes it
+automatically.
+
 ### Supported clients
 
-| Client | Instruction file | Plugin |
-|--------|-----------------|--------|
-| Claude Code | `CLAUDE.md` | — |
-| OpenCode | `AGENTS.md` | `.opencode/plugins/graphify-temporal.js` |
-| Codex | `AGENTS.md` | — |
-| Gemini CLI | `GEMINI.md` | — |
-| Cursor | `.cursor/rules/graphify-temporal.mdc` | — |
-| CodeBuddy | `CODEBUDDY.md` | — |
-| Copilot | `.github/copilot-instructions.md` | — |
-| Windsurf | `.windsurf/rules/graphify-temporal.md` | — |
-| Aider | `AGENTS.md` | — |
-| Kilo Code | `AGENTS.md` | — |
-| Trae | `AGENTS.md` | — |
+| Client | Instruction file | Plugin | Skill |
+|--------|-----------------|--------|-------|
+| Claude Code | `CLAUDE.md` | — | `.claude/skills/graphify-temporal/` |
+| OpenCode | `AGENTS.md` | `.opencode/plugins/graphify-temporal.js` | `.opencode/skills/graphify-temporal/` |
+| Codex | `AGENTS.md` | — | — |
+| Gemini CLI | `GEMINI.md` | — | — |
+| Cursor | `.cursor/rules/graphify-temporal.mdc` | — | — |
+| CodeBuddy | `CODEBUDDY.md` | — | — |
+| Copilot | `.github/copilot-instructions.md` | — | — |
+| Windsurf | `.windsurf/rules/graphify-temporal.md` | — | — |
+| Aider | `AGENTS.md` | — | — |
+| Kilo Code | `AGENTS.md` | — | — |
+| Trae | `AGENTS.md` | — | — |
 
 The OpenCode plugin checks whether `graph.json` exists but lacks `file_mtime`
 and reminds the agent to run enrichment before it reaches for raw file reads.

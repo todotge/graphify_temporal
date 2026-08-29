@@ -22,8 +22,8 @@ graphify-temporal uninstall
 
 | Client | Instruction file | What it gets |
 |--------|-----------------|-------------|
-| Claude Code | `CLAUDE.md` | `## graphify-temporal` block |
-| OpenCode | `AGENTS.md` | Block + plugin (`.opencode/plugins/graphify-temporal.js`) + `opencode.json` registration |
+| Claude Code | `CLAUDE.md` | Block + skill (`.claude/skills/graphify-temporal/`) |
+| OpenCode | `AGENTS.md` | Block + plugin (`.opencode/plugins/graphify-temporal.js`) + skill (`.opencode/skills/graphify-temporal/`) + `opencode.json` registration |
 | Codex | `AGENTS.md` | `## graphify-temporal` block |
 | Gemini CLI | `GEMINI.md` | `## graphify-temporal` block |
 | Cursor | `.cursor/rules/graphify-temporal.mdc` | `## graphify-temporal` block |
@@ -107,19 +107,45 @@ own reading of the conversation, which is what the injected "Root-cause
 tracing" prose (see above) targets instead. Extending the plugin here would
 mean guessing at bash-command content for signs of debugging — fragile and
 unrequested — so it was considered and rejected rather than silently omitted.
+The skill (see below) is the mechanism that fills this gap: its description
+is the trigger surface the plugin structurally cannot be.
+
+## Skill (OpenCode + Claude Code)
+
+For clients that support agent skills, `install` also writes a discoverable
+skill — the same `SKILL.md` format both clients use:
+
+```
+.opencode/skills/graphify-temporal/SKILL.md
+.claude/skills/graphify-temporal/SKILL.md
+```
+
+The skill's frontmatter description names the situations where the agent
+should reach for the tool on its own — post-`/graphify` enrichment, time-based
+questions ("what changed this week"), order-of-work questions (timeline), and
+root-cause tracing ("X broke Y", "what did I touch") — so `query`/`timeline`/
+`impact` get used without the agent having to read the full instruction block.
+The body carries the same flag heuristics and command examples as the block.
+
+A `.graphify-temporal_version` marker sits next to `SKILL.md` (same pattern
+as graphify's `.graphify_version`): re-running `install` after an upgrade
+rewrites the skill only when the version changed. `uninstall` removes the
+skill files and the directory, but preserves any files you added there.
 
 ## Idempotency
 
 `install` and `uninstall` are safe to run multiple times:
 
 - **install twice** — the block is replaced with the current version, no duplication
+- **install twice (skill)** — skipped entirely when the version marker matches
 - **uninstall when nothing is installed** — succeeds silently
 - **install after uninstall** — writes a fresh block as if it were the first time
 
 ## Workflow for a team
 
 1. One person runs `graphify-temporal install` and commits the instruction
-   files + `.opencode/plugins/` + `opencode.json`.
+   files + `.opencode/plugins/` + `.opencode/skills/` + `.claude/skills/` +
+   `opencode.json`.
 2. Everyone pulls — their AI assistant immediately knows how to run
    enrichment.
 3. After modifying code, each developer runs `graphify-temporal enrich` to

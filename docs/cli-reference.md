@@ -61,7 +61,7 @@ graphify-temporal enrich --exclude "**/archive/**" --exclude "**/old/**"
 ### Output
 
 ```
-graphify-temporal v1.0.0
+graphify-temporal v1.0.1
   Files analyzed:     1,220
   Nodes enriched:    14,173 (85%)
   Files not found:       12
@@ -229,7 +229,7 @@ graphify-temporal stats [--json]
 ### Example output
 
 ```
-graphify-temporal v1.0.0  — temporal stats
+graphify-temporal v1.0.1  — temporal stats
 
   Nodes total:           340
   With file_mtime:       340 (100%)
@@ -307,7 +307,7 @@ independent confirmation is itself a relevance signal.
 ### Output (human-readable)
 
 ```
-graphify-temporal v1.0.0  — impact trace: auth_module <-> database_pool
+graphify-temporal v1.0.1  — impact trace: auth_module <-> database_pool
 
   Direct path: auth_module -> connection_manager -> database_pool  (2 hops, relation: calls, references)
 

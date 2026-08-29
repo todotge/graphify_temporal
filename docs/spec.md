@@ -1,6 +1,6 @@
 # graphify-temporal: Architecture & Specification
 
-**Version:** 1.0.0
+**Version:** 1.0.1
 **Status:** implemented
 **Date:** 2026-06-11
 

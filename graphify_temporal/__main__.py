@@ -15,15 +15,14 @@ from .install import detect, install as _install, uninstall as _uninstall
 from .query import query_nodes, build_timeline, temporal_stats, impact
 
 
-def _print_install_results(results: dict[str, bool]) -> None:
-    """Print a one-line-per-client install summary."""
-    for cid, ok in sorted(results.items()):
-        status = "\u2713" if ok else "\u2717"
-        print(f"  {cid:12s} {status}")
+_PLATFORMS = [
+    "claude", "codex", "opencode", "gemini", "cursor", "codebuddy",
+    "copilot", "windsurf", "aider", "kilo", "trae",
+]
 
 
-def _print_uninstall_results(results: dict[str, bool]) -> None:
-    """Print a one-line-per-client uninstall summary."""
+def _print_results(results: dict[str, bool]) -> None:
+    """Print a one-line-per-client install/uninstall summary."""
     for cid, ok in sorted(results.items()):
         status = "\u2713" if ok else "\u2717"
         print(f"  {cid:12s} {status}")
@@ -255,7 +254,7 @@ def main() -> None:
     )
     install_parser.add_argument(
         "--platform",
-        choices=["claude", "codex", "opencode", "gemini", "cursor", "codebuddy", "copilot", "windsurf", "aider", "kilo", "trae"],
+        choices=_PLATFORMS,
         default=None,
         help="Force a specific client (default: auto-detect all)",
     )
@@ -267,7 +266,7 @@ def main() -> None:
     )
     uninstall_parser.add_argument(
         "--platform",
-        choices=["claude", "codex", "opencode", "gemini", "cursor", "codebuddy", "copilot", "windsurf", "aider", "kilo", "trae"],
+        choices=_PLATFORMS,
         default=None,
         help="Force a specific client (default: auto-detect all)",
     )
@@ -415,7 +414,7 @@ def main() -> None:
         except OSError as e:
             print(f"error: {e}", file=sys.stderr)
             sys.exit(1)
-        _print_install_results(results)
+        _print_results(results)
         return
 
     if args.command == "uninstall":
@@ -432,7 +431,7 @@ def main() -> None:
         except OSError as e:
             print(f"error: {e}", file=sys.stderr)
             sys.exit(1)
-        _print_uninstall_results(results)
+        _print_results(results)
         return
 
     if args.command == "query":
@@ -447,7 +446,7 @@ def main() -> None:
                 order=args.order,
                 files_only=not args.full,
             )
-        except (FileNotFoundError, ValueError, OSError) as e:
+        except (ValueError, OSError) as e:
             print(f"error: {e}", file=sys.stderr)
             sys.exit(1)
         if not args.search and not args.since and not args.before:
@@ -478,7 +477,7 @@ def main() -> None:
                 before=args.before,
                 files_only=not args.full,
             )
-        except (FileNotFoundError, ValueError, OSError) as e:
+        except (ValueError, OSError) as e:
             print(f"error: {e}", file=sys.stderr)
             sys.exit(1)
         if not steps:
@@ -496,7 +495,7 @@ def main() -> None:
         root = Path(".").resolve()
         try:
             s = temporal_stats(root)
-        except (FileNotFoundError, ValueError, OSError) as e:
+        except (ValueError, OSError) as e:
             print(f"error: {e}", file=sys.stderr)
             sys.exit(1)
         if args.json:
@@ -521,7 +520,7 @@ def main() -> None:
                 relations=relations,
                 max_candidates=args.max_candidates,
             )
-        except (FileNotFoundError, ValueError, OSError) as e:
+        except (ValueError, OSError) as e:
             print(f"error: {e}", file=sys.stderr)
             sys.exit(1)
         if args.json:
