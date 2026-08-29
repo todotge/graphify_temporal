@@ -16,6 +16,7 @@ env/
 .pytest_cache/
 .coverage
 htmlcov/
+benchmark/
 
 # graphify output (user generates this locally)
 graphify-out/
@@ -28,5 +29,10 @@ graphify-out/
 
 # OpenCode dev environment (not needed by users)
 .opencode/
+*.md
+!README.md
+!CONTRIBUTING.md
+!SECURITY.md
+!AGENTS.md
+!CHANGELOG.md
 
-ISSUE_ROADMAP.md
