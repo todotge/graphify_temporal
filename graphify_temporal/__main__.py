@@ -12,18 +12,17 @@ from pathlib import Path
 from . import __version__
 from .enricher import enrich, regenerate_outputs
 from .install import detect, install as _install, uninstall as _uninstall
-from .query import query_nodes, build_timeline, temporal_stats
+from .query import query_nodes, build_timeline, temporal_stats, impact
 
 
-def _print_install_results(results: dict[str, bool]) -> None:
-    """Print a one-line-per-client install summary."""
-    for cid, ok in sorted(results.items()):
-        status = "\u2713" if ok else "\u2717"
-        print(f"  {cid:12s} {status}")
+_PLATFORMS = [
+    "claude", "codex", "opencode", "gemini", "cursor", "codebuddy",
+    "copilot", "windsurf", "aider", "kilo", "trae",
+]
 
 
-def _print_uninstall_results(results: dict[str, bool]) -> None:
-    """Print a one-line-per-client uninstall summary."""
+def _print_results(results: dict[str, bool]) -> None:
+    """Print a one-line-per-client install/uninstall summary."""
     for cid, ok in sorted(results.items()):
         status = "\u2713" if ok else "\u2717"
         print(f"  {cid:12s} {status}")
@@ -91,6 +90,45 @@ def _print_stats(s: dict) -> None:
         print(f"  Longest gap:           {_fmt_duration(s['longest_gap_seconds'])}  ({s['longest_gap_pair'][0]} → {s['longest_gap_pair'][1]})")
 
 
+def _print_impact(result: dict) -> None:
+    """Print a human-readable impact trace: direct path + ranked candidates."""
+    a, b = result["anchor_a"], result["anchor_b"]
+    print(f"graphify-temporal v{__version__}  — impact trace: {a} <-> {b or '(none)'}")
+
+    if result["structural_confidence"] == "temporal-only":
+        print(
+            "  [temporal-only: no semantic edges in this graph — results reflect "
+            "timestamp proximity only, not confirmed code relationships]"
+        )
+
+    if result["isolated_anchors"]:
+        for n in result["isolated_anchors"]:
+            print(f"  (note: '{n}' has no recorded edges — check the file directly)")
+
+    if result["direct_path"]:
+        chain = " -> ".join([a] + [s["node_id"] for s in result["direct_path"]])
+        last_hop = result["direct_path"][-1]["hop"]
+        rels = ", ".join(s["relation"] for s in result["direct_path"])
+        print(f"\n  Direct path: {chain}  ({last_hop} hops, relation: {rels})")
+    elif b:
+        print(f"\n  Direct path: none found within the hop limit")
+
+    print("\n  Candidates (bridge/neighbor, ranked):")
+    if not result["candidates"]:
+        print("    (no results)")
+    for i, c in enumerate(result["candidates"], 1):
+        mt = (c.get("file_mtime") or "")[:19]
+        rels = ",".join(c["relation_path"])
+        alt = f"  alt={c['alternate_paths']}" if c.get("alternate_paths", 0) > 1 else ""
+        print(
+            f"    #{i:<3} {c['connection']:<14s} hop={c['hop']}  "
+            f"score={c['score']:<5} {c['node_id']:<30s} ({rels}){alt}  {mt}"
+        )
+
+    if result["truncated"]:
+        print("\n  (truncated — hop/candidate budget reached)")
+
+
 def _pct(part: int, total: int) -> float:
     return (part / total * 100) if total else 0.0
 
@@ -142,6 +180,17 @@ def main() -> None:
         "--use-birthtime",
         action="store_true",
         help="Use st_birthtime instead of st_mtime (true creation time)",
+    )
+    enrich_parser.add_argument(
+        "--git",
+        action="store_true",
+        help=(
+            "Derive timestamps from git history (author-date via log/blame) "
+            "instead of filesystem stat, for files inside a git repo — stat "
+            "mtime on a clone reflects checkout time, not real history. "
+            "Falls back to stat for untracked files or when git is unavailable. "
+            "Mutually exclusive with --use-ctime/--use-birthtime"
+        ),
     )
     # Cross-file chaining.
     enrich_parser.add_argument(
@@ -205,7 +254,7 @@ def main() -> None:
     )
     install_parser.add_argument(
         "--platform",
-        choices=["claude", "codex", "opencode", "gemini", "cursor", "codebuddy", "copilot", "windsurf", "aider", "kilo", "trae"],
+        choices=_PLATFORMS,
         default=None,
         help="Force a specific client (default: auto-detect all)",
     )
@@ -217,7 +266,7 @@ def main() -> None:
     )
     uninstall_parser.add_argument(
         "--platform",
-        choices=["claude", "codex", "opencode", "gemini", "cursor", "codebuddy", "copilot", "windsurf", "aider", "kilo", "trae"],
+        choices=_PLATFORMS,
         default=None,
         help="Force a specific client (default: auto-detect all)",
     )
@@ -306,6 +355,48 @@ def main() -> None:
         help="Output as JSON instead of human-readable text",
     )
 
+    # ---- impact subcommand --------------------------------------------------
+    impact_parser = sub.add_parser(
+        "impact",
+        help="Trace structural + temporal connections between two areas of code (root-cause tracing)",
+    )
+    impact_parser.add_argument(
+        "node_a",
+        help="First node id (e.g. the file/function you changed)",
+    )
+    impact_parser.add_argument(
+        "node_b",
+        nargs="?",
+        default=None,
+        help="Second node id (e.g. the file that broke). Omit to explore what's reachable from node_a alone",
+    )
+    impact_parser.add_argument(
+        "--hops",
+        type=int,
+        default=3,
+        metavar="N",
+        help="Max traversal depth (default: 3)",
+    )
+    impact_parser.add_argument(
+        "--relations",
+        type=str,
+        default=None,
+        metavar="REL,REL",
+        help="Comma-separated relation types to follow (default: all relations, including preceded_by)",
+    )
+    impact_parser.add_argument(
+        "--max-candidates",
+        type=int,
+        default=25,
+        metavar="N",
+        help="Max candidates to show (default: 25)",
+    )
+    impact_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output as JSON instead of human-readable text",
+    )
+
     args = parser.parse_args()
 
     if args.command == "install":
@@ -323,7 +414,7 @@ def main() -> None:
         except OSError as e:
             print(f"error: {e}", file=sys.stderr)
             sys.exit(1)
-        _print_install_results(results)
+        _print_results(results)
         return
 
     if args.command == "uninstall":
@@ -340,7 +431,7 @@ def main() -> None:
         except OSError as e:
             print(f"error: {e}", file=sys.stderr)
             sys.exit(1)
-        _print_uninstall_results(results)
+        _print_results(results)
         return
 
     if args.command == "query":
@@ -355,7 +446,7 @@ def main() -> None:
                 order=args.order,
                 files_only=not args.full,
             )
-        except (FileNotFoundError, ValueError, OSError) as e:
+        except (ValueError, OSError) as e:
             print(f"error: {e}", file=sys.stderr)
             sys.exit(1)
         if not args.search and not args.since and not args.before:
@@ -386,7 +477,7 @@ def main() -> None:
                 before=args.before,
                 files_only=not args.full,
             )
-        except (FileNotFoundError, ValueError, OSError) as e:
+        except (ValueError, OSError) as e:
             print(f"error: {e}", file=sys.stderr)
             sys.exit(1)
         if not steps:
@@ -404,7 +495,7 @@ def main() -> None:
         root = Path(".").resolve()
         try:
             s = temporal_stats(root)
-        except (FileNotFoundError, ValueError, OSError) as e:
+        except (ValueError, OSError) as e:
             print(f"error: {e}", file=sys.stderr)
             sys.exit(1)
         if args.json:
@@ -414,17 +505,42 @@ def main() -> None:
             _print_stats(s)
         return
 
+    if args.command == "impact":
+        root = Path(".").resolve()
+        if args.hops < 1:
+            print("error: --hops must be >= 1", file=sys.stderr)
+            sys.exit(1)
+        relations = args.relations.split(",") if args.relations else None
+        try:
+            result = impact(
+                root,
+                node_a=args.node_a,
+                node_b=args.node_b,
+                hops=args.hops,
+                relations=relations,
+                max_candidates=args.max_candidates,
+            )
+        except (ValueError, OSError) as e:
+            print(f"error: {e}", file=sys.stderr)
+            sys.exit(1)
+        if args.json:
+            import json as _json
+            print(_json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            _print_impact(result)
+        return
+
     # argparse will set command to the subparser name when matched, or None
     # when no subparser matched at all.
     if args.command != "enrich":
         parser.print_help()
         sys.exit(1)
 
-    # --use-ctime and --use-birthtime are mutually exclusive.
-    if args.use_ctime and args.use_birthtime:
+    # --use-ctime, --use-birthtime, and --git are mutually exclusive.
+    if sum([args.use_ctime, args.use_birthtime, args.git]) > 1:
         print(
-            "error: --use-ctime and --use-birthtime are mutually exclusive. "
-            "Choose one timestamp source.",
+            "error: --git, --use-ctime and --use-birthtime are mutually "
+            "exclusive. Choose one timestamp source.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -451,6 +567,7 @@ def main() -> None:
             root=root,
             use_ctime=args.use_ctime,
             use_birthtime=args.use_birthtime,
+            use_git=args.git,
             cross_file=args.cross_file,
             dry_run=args.dry_run,
             since=args.since,

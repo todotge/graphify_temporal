@@ -1,6 +1,6 @@
 [project]
 name = "graphify-temporal"
-version = "1.0.0"
+version = "1.0.1"
 description = "Temporal enrichment for graphify knowledge graphs — adds file_mtime to nodes and preceded_by edges from filesystem timestamps"
 readme = "README.md"
 license = {text = "MIT"}

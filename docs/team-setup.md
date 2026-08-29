@@ -22,8 +22,8 @@ graphify-temporal uninstall
 
 | Client | Instruction file | What it gets |
 |--------|-----------------|-------------|
-| Claude Code | `CLAUDE.md` | `## graphify-temporal` block |
-| OpenCode | `AGENTS.md` | Block + plugin (`.opencode/plugins/graphify-temporal.js`) + `opencode.json` registration |
+| Claude Code | `CLAUDE.md` | Block + skill (`.claude/skills/graphify-temporal/`) |
+| OpenCode | `AGENTS.md` | Block + plugin (`.opencode/plugins/graphify-temporal.js`) + skill (`.opencode/skills/graphify-temporal/`) + `opencode.json` registration |
 | Codex | `AGENTS.md` | `## graphify-temporal` block |
 | Gemini CLI | `GEMINI.md` | `## graphify-temporal` block |
 | Cursor | `.cursor/rules/graphify-temporal.mdc` | `## graphify-temporal` block |
@@ -58,10 +58,18 @@ under the project root, the client is considered present.  For example:
 The `## graphify-temporal` block contains:
 
 - **Setup** — `pip install git+...`, `git clone ... && pip install .`, and `uv venv && uv pip install -e ".[dev]"`
-- **All `enrich`, `query`, `timeline`, `stats` commands** with examples and agent guidance
+- **All `enrich`, `query`, `timeline`, `stats` commands** with examples and agent guidance,
+  including `--git` for repos where filesystem timestamps are checkout artifacts
+  (cloned repos, CI checkouts) rather than real history
+- **Root-cause tracing (`impact`)** — with explicit "use this proactively during
+  debugging, before manually grepping" guidance, since 10 of the 11 supported
+  clients have no runtime hook (see below) and this injected prose is the only
+  lever that gets an agent to reach for `impact` on its own
 - **`install` / `uninstall`** commands
 - **Test command** — `.venv/bin/pytest tests/ -v`
-- **Key facts** — zero deps, idempotent, cross-platform, st_birthtime support
+- **Key facts** — zero pip deps, idempotent, cross-platform, st_birthtime support,
+  `--git` requires the `git` binary but falls back to stat automatically if absent,
+  `impact` is read-only (never writes to graph.json)
 
 The block is delimited by `## graphify-temporal` and the next `## ` heading.
 On re-install the block is replaced in-place — never duplicated.
@@ -91,19 +99,69 @@ The plugin hooks into `tool.execute.before` and checks whether
 If so, it reminds the agent to run `graphify-temporal enrich` before it
 reaches for raw file reads.  The reminder fires once per session.
 
+**Not extended for `impact`, deliberately.** A `tool.execute.before` hook only
+sees tool calls, never the user's chat text — it structurally cannot detect
+"the user described a bug involving two related modules," which is exactly
+the trigger `impact` needs. That pattern-matching only happens in the LLM's
+own reading of the conversation, which is what the injected "Root-cause
+tracing" prose (see above) targets instead. Extending the plugin here would
+mean guessing at bash-command content for signs of debugging — fragile and
+unrequested — so it was considered and rejected rather than silently omitted.
+The skill (see below) is the mechanism that fills this gap: its description
+is the trigger surface the plugin structurally cannot be.
+
+## Skill (OpenCode + Claude Code)
+
+For clients that support agent skills, `install` also writes a discoverable
+skill — the same `SKILL.md` format both clients use:
+
+```
+.opencode/skills/graphify-temporal/SKILL.md
+.claude/skills/graphify-temporal/SKILL.md
+```
+
+The skill's frontmatter description names the situations where the agent
+should reach for the tool on its own — post-`/graphify` enrichment, time-based
+questions ("what changed this week"), order-of-work questions (timeline), and
+root-cause tracing ("X broke Y", "what did I touch") — so `query`/`timeline`/
+`impact` get used without the agent having to read the full instruction block.
+The body carries the same flag heuristics and command examples as the block.
+
+A `.graphify-temporal_version` marker sits next to `SKILL.md` (same pattern
+as graphify's `.graphify_version`): re-running `install` after an upgrade
+rewrites the skill only when the version changed. `uninstall` removes the
+skill files and the directory, but preserves any files you added there.
+
 ## Idempotency
 
 `install` and `uninstall` are safe to run multiple times:
 
 - **install twice** — the block is replaced with the current version, no duplication
+- **install twice (skill)** — skipped entirely when the version marker matches
 - **uninstall when nothing is installed** — succeeds silently
 - **install after uninstall** — writes a fresh block as if it were the first time
 
 ## Workflow for a team
 
 1. One person runs `graphify-temporal install` and commits the instruction
-   files + `.opencode/plugins/` + `opencode.json`.
+   files + `.opencode/plugins/` + `.opencode/skills/` + `.claude/skills/` +
+   `opencode.json`.
 2. Everyone pulls — their AI assistant immediately knows how to run
    enrichment.
 3. After modifying code, each developer runs `graphify-temporal enrich` to
    keep timestamps current (idempotent, no harm in re-running).
+
+Since every teammate's checkout is itself a git clone, `--use-birthtime`/
+default `mtime` will show ~the same value for every file that hasn't been
+touched locally since the clone — not useful for tracing who-wrote-what.
+For a team repo, prefer:
+
+```bash
+graphify-temporal enrich --git
+```
+
+This reads dates from the shared commit history instead, so `file_mtime`
+and `git_commit_date`/`git_author` reflect the team's actual authorship
+timeline regardless of when each person cloned the repo. See
+[timestamps.md](timestamps.md#git-derived-timestamps---git) for the
+resolution order and fallback rules.
