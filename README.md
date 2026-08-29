@@ -1,6 +1,6 @@
 # graphify-temporal
 
-![version](https://img.shields.io/badge/version-1.0.0-blue)
+![version](https://img.shields.io/badge/version-1.0.1-blue)
 ![python](https://img.shields.io/badge/python-%3E%3D3.10-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
 [![Ko-fi](https://img.shields.io/badge/support-Ko--fi-ff5e5b)](https://ko-fi.com/gianlucagernone)
@@ -139,7 +139,7 @@ graphify-temporal enrich --exclude "**/archive/**" --exclude "**/old/**"
 ### Example output
 
 ```
-graphify-temporal v1.0.0
+graphify-temporal v1.0.1
   Files analyzed:     1,220
   Nodes enriched:    14,173 (85%)
   Files not found:       12
@@ -264,7 +264,7 @@ graphify-temporal query "AuthModule"          # find the node id
 graphify-temporal impact auth_module database_pool --hops 3
 ```
 ```
-graphify-temporal v1.0.0  — impact trace: auth_module <-> database_pool
+graphify-temporal v1.0.1  — impact trace: auth_module <-> database_pool
 
   Direct path: auth_module -> connection_manager -> database_pool  (2 hops, relation: calls, references)
 

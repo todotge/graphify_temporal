@@ -196,7 +196,7 @@ def enrich(
             relpath = _safe_relative(git_root, root / sf)
             if relpath is not None:
                 git_relpaths[sf] = relpath
-                git_date = git_source.resolve_file_date(git_root, relpath, mode="last")
+                git_date = git_source.resolve_file_date(git_root, relpath)
                 git_file_date_cache[sf] = git_date
 
         if since_ts is not None:
@@ -211,7 +211,7 @@ def enrich(
                 fp = root / sf
                 try:
                     st = fp.stat()
-                except (OSError, FileNotFoundError):
+                except OSError:
                     not_found += 1
                     mtime_cache[sf] = None
                     continue
@@ -334,15 +334,13 @@ def enrich(
             sf_b, _ = file_timeline[i + 1]
             # Sort by line so the "first" node is truly the first by position,
             # consistent with intra-file edge ordering.
-            nodes_a = sorted(
+            first_a = sorted(
                 nodes_by_file[sf_a], key=lambda x: (_extract_line(x[0]), x[1])
-            ) if nodes_by_file.get(sf_a) else []
-            nodes_b = sorted(
+            )[0][1]
+            first_b = sorted(
                 nodes_by_file[sf_b], key=lambda x: (_extract_line(x[0]), x[1])
-            ) if nodes_by_file.get(sf_b) else []
-            first_a = nodes_a[0][1] if nodes_a else None
-            first_b = nodes_b[0][1] if nodes_b else None
-            if first_a and first_b and first_a != first_b:
+            )[0][1]
+            if first_a != first_b:
                 new_edges.append({
                     "source": first_a,
                     "target": first_b,

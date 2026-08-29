@@ -13,6 +13,7 @@ temporal filters to nodes.  Four entry points:
 
 from __future__ import annotations
 
+import datetime
 import json
 from collections import deque
 from pathlib import Path
@@ -353,13 +354,12 @@ def temporal_stats(root: Path) -> dict[str, Any]:
         sorted_mtimes[-1] if sorted_mtimes else None
     )
 
-    import datetime as _dt
     oldest_d = (
-        _dt.datetime.fromtimestamp(oldest_mtime, tz=_dt.timezone.utc).date()
+        datetime.datetime.fromtimestamp(oldest_mtime, tz=datetime.timezone.utc).date()
         if oldest_mtime else None
     )
     newest_d = (
-        _dt.datetime.fromtimestamp(newest_mtime, tz=_dt.timezone.utc).date()
+        datetime.datetime.fromtimestamp(newest_mtime, tz=datetime.timezone.utc).date()
         if newest_mtime else None
     )
     span_days: float = (

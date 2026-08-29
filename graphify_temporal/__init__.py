@@ -5,4 +5,4 @@ deterministic preceded_by edges ordered by filesystem timestamp and line number.
 Zero LLM cost — pure stat + JSON mutation.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"

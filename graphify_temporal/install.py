@@ -525,16 +525,12 @@ def _append_block(text: str) -> str:
 
 
 def _install_skill(root: Path, client: str) -> bool:
-    """Write SKILL.md + version marker for *client* if it supports skills.
+    """Write SKILL.md + version marker for *client*.
 
-    Returns True when the client has no skill support (nothing to do) or
-    the skill is already current; False only on a real I/O error.
+    Returns True when the skill is already current; False only on a real
+    I/O error.
     """
-    rel = _SKILL_PATHS.get(client)
-    if rel is None:
-        return True  # client has no skill support — nothing to do
-
-    skill_dir = root / rel
+    skill_dir = root / _SKILL_PATHS[client]
     marker = skill_dir / _SKILL_VERSION_MARKER
     try:
         if (
@@ -553,11 +549,7 @@ def _install_skill(root: Path, client: str) -> bool:
 
 def _uninstall_skill(root: Path, client: str) -> bool:
     """Remove the skill files we manage for *client*; leave user files alone."""
-    rel = _SKILL_PATHS.get(client)
-    if rel is None:
-        return True  # client has no skill support — nothing to do
-
-    skill_dir = root / rel
+    skill_dir = root / _SKILL_PATHS[client]
     try:
         if not skill_dir.exists():
             return True

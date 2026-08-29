@@ -53,46 +53,22 @@ def find_repo_root(start: Path) -> Path | None:
         return None
 
 
-def is_shallow_repo(repo_root: Path) -> bool:
-    """Return True when *repo_root* is a shallow clone (e.g. ``--depth 1``).
-
-    Single stat, no subprocess: checks for ``.git/shallow``.
-    """
-    try:
-        return (repo_root / ".git" / "shallow").exists()
-    except OSError:
-        return False
-
-
-def _iso_from_epoch(ts: float) -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
-
-
-def resolve_file_date(
-    repo_root: Path, relpath: str, mode: str = "last",
-) -> str | None:
+def resolve_file_date(repo_root: Path, relpath: str) -> str | None:
     """Return the git author-date of *relpath* as ISO 8601, or None.
 
-    mode="last"  — date of the most recent commit touching the file
-                   (``git log -1``).  Valid even in a shallow clone: the
-                   newest commit's author-date is real regardless of how
-                   much history was fetched.
-    mode="first" — date of the oldest known commit (creation date).
-                   Refused (returns None) on a shallow clone, since the
-                   shallow boundary would masquerade as a fake creation
-                   date rather than the file's true origin.
+    Uses ``git log -1`` — the date of the most recent commit touching the
+    file.  Valid even in a shallow clone: the newest commit's author-date
+    is real regardless of how much history was fetched.
 
     Returns None when git log prints nothing (untracked/new file), the
     call fails, or times out.
     """
     if not git_available():
         return None
-    if mode == "first" and is_shallow_repo(repo_root):
-        return None
-    args = ["git", "-C", str(repo_root), "log", "--follow", "--format=%aI"]
-    if mode == "last":
-        args.insert(4, "-1")
-    args += ["--", relpath]
+    args = [
+        "git", "-C", str(repo_root), "log", "-1", "--follow",
+        "--format=%aI", "--", relpath,
+    ]
     try:
         result = subprocess.run(args, capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.TimeoutExpired):
@@ -102,8 +78,11 @@ def resolve_file_date(
     lines = [l for l in result.stdout.splitlines() if l.strip()]
     if not lines:
         return None
-    raw = lines[0] if mode == "last" else lines[-1]
-    return _normalize_aI(raw)
+    return _normalize_aI(lines[0])
+
+
+def _iso_from_epoch(ts: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
 
 
 def _normalize_aI(raw: str) -> str | None:
@@ -117,7 +96,6 @@ def _normalize_aI(raw: str) -> str | None:
 
 
 _BLAME_AUTHOR_TIME_RE = re.compile(r"^author-time (\d+)$")
-_BLAME_AUTHOR_RE = re.compile(r"^author (.+)$")
 
 
 def blame_file(repo_root: Path, relpath: str) -> dict[int, str] | None:

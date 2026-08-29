@@ -27,7 +27,7 @@ def resolve_mtime(source_file: str, root: Path, use_ctime: bool = False) -> str 
         st = fp.stat()
         ts = st.st_ctime if use_ctime else st.st_mtime
         return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
-    except (OSError, FileNotFoundError):
+    except OSError:
         return None
 
 
@@ -185,7 +185,7 @@ def resolve_birthtime(source_file: str, root: Path) -> str | None:
         bt = getattr(st, "st_birthtime", None)
         if bt is not None and bt > 0:
             return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(bt))
-    except (OSError, FileNotFoundError):
+    except OSError:
         return None
 
     if sys.platform == "linux":
@@ -219,5 +219,5 @@ def resolve_dir_mtime(source_file: str, root: Path) -> str | None:
         return time.strftime(
             "%Y-%m-%dT%H:%M:%SZ", time.gmtime(dir_st.st_mtime)
         )
-    except (OSError, FileNotFoundError):
+    except OSError:
         return None

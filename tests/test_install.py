@@ -272,24 +272,12 @@ class TestSkillInstall:
     def _skill_dir(self, root: Path, client: str) -> Path:
         return root / _SKILL_PATHS[client]
 
-    def test_opencode_skill_installed(self, tmp_path):
-        """Install for opencode writes SKILL.md + version marker."""
-        (tmp_path / ".opencode").mkdir()
-        results = install(tmp_path, clients=["opencode"])
-        assert results == {"opencode": True}
-        skill_dir = self._skill_dir(tmp_path, "opencode")
-        skill_file = skill_dir / "SKILL.md"
-        assert skill_file.exists()
-        text = skill_file.read_text()
-        assert text == _SKILL_TEMPLATE
-        assert (skill_dir / _SKILL_VERSION_MARKER).exists()
-
-    def test_claude_skill_installed(self, tmp_path):
-        """Install for claude writes the same skill into .claude/skills/."""
-        (tmp_path / "CLAUDE.md").write_text("# hi\n")
-        results = install(tmp_path, clients=["claude"])
-        assert results == {"claude": True}
-        skill_dir = self._skill_dir(tmp_path, "claude")
+    @pytest.mark.parametrize("client", ["opencode", "claude"])
+    def test_skill_installed(self, tmp_path, client):
+        """Install writes SKILL.md + version marker into the client dir."""
+        results = install(tmp_path, clients=[client])
+        assert results == {client: True}
+        skill_dir = self._skill_dir(tmp_path, client)
         skill_file = skill_dir / "SKILL.md"
         assert skill_file.exists()
         assert skill_file.read_text() == _SKILL_TEMPLATE
@@ -316,20 +304,12 @@ class TestSkillInstall:
         assert text == _SKILL_TEMPLATE
         assert "stale skill content" not in text
 
-    def test_uninstall_removes_skill(self, tmp_path):
-        """Uninstall deletes skill dir for opencode."""
-        (tmp_path / ".opencode").mkdir()
-        install(tmp_path, clients=["opencode"])
-        results = uninstall(tmp_path, clients=["opencode"])
-        assert results == {"opencode": True}
-        assert not self._skill_dir(tmp_path, "opencode").exists()
-
-    def test_uninstall_removes_claude_skill(self, tmp_path):
-        """Uninstall deletes skill dir for claude."""
-        (tmp_path / "CLAUDE.md").write_text("# hi\n")
-        install(tmp_path, clients=["claude"])
-        uninstall(tmp_path, clients=["claude"])
-        assert not self._skill_dir(tmp_path, "claude").exists()
+    @pytest.mark.parametrize("client", ["opencode", "claude"])
+    def test_uninstall_removes_skill(self, tmp_path, client):
+        """Uninstall deletes the skill dir for the client."""
+        install(tmp_path, clients=[client])
+        uninstall(tmp_path, clients=[client])
+        assert not self._skill_dir(tmp_path, client).exists()
 
     def test_uninstall_skill_noop_when_absent(self, tmp_path):
         """Uninstall succeeds when the skill was never installed."""

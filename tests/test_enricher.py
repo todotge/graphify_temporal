@@ -572,40 +572,21 @@ class TestGitSource:
         assert git_source.find_repo_root(sub) == tmp_path.resolve()
 
     def test_resolve_file_date_last_touch(self, tmp_path):
-        """Two commits touching the same file → 'last' mode returns the
-        second commit's date, not the first."""
+        """Two commits touching the same file → returns the most recent
+        commit's date, not the first."""
         _make_git_repo(tmp_path)
         _write_file(tmp_path, "a.py", "v1")
         _git_commit(tmp_path, "first", when="2023-01-01T00:00:00Z")
         _write_file(tmp_path, "a.py", "v2")
         _git_commit(tmp_path, "second", when="2024-06-15T00:00:00Z")
 
-        date = git_source.resolve_file_date(tmp_path, "a.py", mode="last")
+        date = git_source.resolve_file_date(tmp_path, "a.py")
         assert date == "2024-06-15T00:00:00Z"
-
-    def test_resolve_file_date_first_creation(self, tmp_path):
-        _make_git_repo(tmp_path)
-        _write_file(tmp_path, "a.py", "v1")
-        _git_commit(tmp_path, "first", when="2023-01-01T00:00:00Z")
-        _write_file(tmp_path, "a.py", "v2")
-        _git_commit(tmp_path, "second", when="2024-06-15T00:00:00Z")
-
-        date = git_source.resolve_file_date(tmp_path, "a.py", mode="first")
-        assert date == "2023-01-01T00:00:00Z"
 
     def test_resolve_file_date_untracked_file(self, tmp_path):
         _make_git_repo(tmp_path)
         _write_file(tmp_path, "untracked.py")
         assert git_source.resolve_file_date(tmp_path, "untracked.py") is None
-
-    def test_is_shallow_repo_false_normal_clone(self, tmp_path):
-        _make_git_repo(tmp_path)
-        assert git_source.is_shallow_repo(tmp_path) is False
-
-    def test_is_shallow_repo_true(self, tmp_path):
-        _make_git_repo(tmp_path)
-        (tmp_path / ".git" / "shallow").touch()
-        assert git_source.is_shallow_repo(tmp_path) is True
 
     def test_blame_file_line_dates(self, tmp_path):
         """Line-level attribution: only the modified line shows the newer
