@@ -81,12 +81,12 @@ timestamps and creates deterministic `preceded_by` edges.
 
 ### Setup
 ```bash
-pip install git+https://github.com/todotge/graphify-temporal.git
+pip install git+https://github.com/todotge/graphify_temporal.git
 ```
 Or clone and install locally:
 ```bash
-git clone https://github.com/todotge/graphify-temporal.git
-cd graphify-temporal
+git clone https://github.com/todotge/graphify_temporal.git
+cd graphify_temporal
 pip install .
 ```
 Editable install (development):
